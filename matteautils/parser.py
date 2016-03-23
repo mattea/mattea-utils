@@ -1,7 +1,12 @@
 from peak.util.imports import lazyModule
+import functools
 stemmer = None
 word_tokenize = lazyModule('nltk.word_tokenize')
 PorterStemmer = lazyModule('nltk.stem.porter.PorterStemmer')
+from nltk.corpus import stopwords
+stopl = None
+from gensim.models import Word2Vec
+
 
 class Match(object):
 	def __init__(self, score=0.0, start=0, end=0, mtype=None):
@@ -9,6 +14,43 @@ class Match(object):
 		self.start = start
 		self.end = end
 		self.mtype = mtype
+
+
+wvsource="https://docs.google.com/uc?export=download&confirm=xpiI&id=0B7XkCwpI5KDYeFdmcVltWkhtbmM"
+
+
+class WordVec(object):
+	wordvecf = '/huge1/sourcedata/word2vec/google/vectors-skipgram1000-en.bin'
+	emptyvec = [1e-10] * 1000
+	wordvec = []
+
+	def __init__(self, wf=None):
+		self.wordvec = Word2Vec.load_word2vec_format(wf or wordvecf, binary=True)
+
+	def get_sentvec(self, words):
+		sent_vec = []
+		witer = iter(range(len(words)))
+		for i in witer:
+			wvec = self.emptyvec
+			if (i + 1) < len(words):
+				word = words[i] + '_' + words[i + 1]
+				nwvec = self.get_wordvec(word)
+				if nwvec is not self.emptyvec:
+					wvec = nwvec
+					witer.next()
+			if wvec is self.emptyvec:
+				word = words[i]
+				wvec = self.get_wordvec(word)
+			sent_vec.append(wvec)
+		return sent_vec
+	
+	
+	def get_wordvec(self, word):
+		word = '/en/' + word
+		try:
+			return self.wordvec[word]
+		except KeyError:
+			return self.emptyvec
 
 
 def shingle(stoks, ttoks, slop=12, lmbda=0.95):
@@ -51,7 +93,7 @@ def shingle(stoks, ttoks, slop=12, lmbda=0.95):
 		return Match(0, 0, 0)
 
 
-@total_ordering
+@functools.total_ordering
 class PList(object):
 	def __init__(self, l=[], _id=0):
 		self.l = l
@@ -103,11 +145,14 @@ def gindex(s, ch):
 
 
 def tokenize(t):
+	global stopl
 	try:
 		toks = word_tokenize(t)
 	except Exception:
 		toks = t.strip().split()
 	toks = [x.lower() for x in toks]
+	if not stopl:
+		stopl = set(stopwords.words('english'))
 	return [x for x in toks if x not in stopl]
 
 

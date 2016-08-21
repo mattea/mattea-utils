@@ -1,0 +1,46 @@
+syntax = "proto2";
+package matteautils;
+
+message Dataset {
+	optional string name = 1;
+	optional int32 id = 2;
+
+	enum DatasetType {
+		MSRP = 0;
+		ONECLICK = 1;
+		MOBILECLICK = 2;
+		TEMPORALSUMMARIZATION = 3;
+	}
+
+	optional DatasetType type = 3;
+
+	map<string, TextFragment> fragments = 4;
+	map<string, Match> matches = 5;
+	map<string, string> matchmap = 6;
+}
+
+message TextFragment {
+	optional string id = 1;
+	optional int32 sentenceid = 2;
+	optional string docid = 3;
+	optional string queryid = 4;
+	optional string text = 5;
+
+	enum TextFragmentType {
+		OBSERVED = 0;
+		EXPECTED = 1;
+	}
+
+	optional TextFragmentType type = 6;
+
+	repeated float vector = 7 [packed=true];
+}
+
+message Match {
+	optional string id = 1;
+	optional string source = 2;
+	optional string target = 3;
+	optional float queryid = 4;
+	optional float score = 5;
+	optional float normalized_score = 6;
+}

@@ -10,7 +10,7 @@ import sys
 import os
 import time
 from collections import defaultdict, Counter
-from itertools import chain
+#from itertools import chain
 import heapq
 import re
 import numpy as np
@@ -18,23 +18,23 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
 from functools import total_ordering
-from gensim.models import Word2Vec
-from scipy.spatial import distance
-from matteautils.match.vectorsim import MinSim, InfSim, VecSim
+#from gensim.models import Word2Vec
+#from scipy.spatial import distance
+from matteautils.match.vectorsim import MinDistSim, InfSim, VecSim
 from matteautils.parser import WordVec
 from matteautils.dataset import Dataset
 from matteautils.dataset.semeval import SemEvalDataset, SentencePair
+from matteautils.base import TSVReader
+import matteautils.config as conf
 
 csv.field_size_limit(sys.maxsize)
+sys.stdout = codecs.getwriter('utf8')(sys.stdout)
 
 #wordvecf = '/huge1/sourcedata/word2vec/google/vectors-skipgram1000-en.bin'
 wordvecf = '/huge1/sourcedata/word2vec/google/GoogleNews-vectors-negative300.bin'
 emptyvec = [1e-10] * 1000
 sim_thr = -10
-#wordvec = []
-wordvec = None
-
-debug = True
+wordvec = []
 
 min_score = 0.1
 
@@ -56,7 +56,7 @@ class TextFragments(object):
 	def calc_vectors(self):
 		for qid, rs in self.data.iteritems():
 			for rid, rec in rs.iteritems():
-				rec["sent_vec"], rec["wv_tokens"] = wordvec.get_sentvec(rec["tokens"])
+				rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(rec["tokens"])
 
 	def text(self):
 		res = []
@@ -90,12 +90,12 @@ class TextFragments(object):
 		printd("Normalizing dset")
 		for qid, rs in self.data.iteritems():
 			for rid, rec in rs.iteritems():
-				rec["sent_vec"], rec["sent_sum"] = matcher.normalize(rec["sent_vec"], df)
+				rec["vector"], rec["vector_sum"] = matcher.normalize(rec["vector"], df)
 
 	def vectorize(self, wordvec):
 		for qid, rs in self.data.iteritems():
 			for rid, rec in rs.iteritems():
-				rec["sent_vec"], rec["wv_tokens"] = wordvec.get_sentvec(rec["tokens"])
+				rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(rec["tokens"])
 
 
 class Superset(object):
@@ -110,16 +110,37 @@ class Superset(object):
 
 
 class NuggetDataset(Dataset):
-	def __init__(self, nuggets, updates):
-		self.nuggets = nuggets
-		self.updates = updates
-		self.data = Superset(nuggets, updates)
+	def __init__(self, nf, uf, mf=None, dset="", vectorize=True):
+		printd("Loading dataset")
+		if dset == "ts":
+			self.nuggets = Nuggets(nf, vectorize)
+			self.updates = Updates(uf, vectorize)
+			self.matches = Matches(mf)
+			self.writer = MatchWriter
+		elif dset == "1click":
+			self.nuggets = CLNuggets(nf, vectorize)
+			self.updates = CLUpdates(uf, vectorize)
+			# TODO(mattea): Fix for 1CLICK
+			self.matches = Matches(mf)
+			self.writer = CLMatchWriter
+		elif dset == "mclick":
+			self.nuggets = MCNuggets(nf, vectorize)
+			self.updates = Updates(uf, vectorize)
+			self.matches = Matches(mf)
+			self.writer = MCMatchWriter
+		else:
+			self.nuggets = Nuggets(nf, vectorize)
+			self.updates = Updates(uf, vectorize)
+			self.matches = Matches(mf)
+			self.writer = MatchWriter
+
+		self.data = Superset(self.nuggets, self.updates)
 
 	def test(self):
-		# Add labels if we need them from a matches class
+		matches = self.matches
 		for nugget in self.nuggets:
 			for update in self.updates:
-				yield SentencePair(nugget, update)
+				yield SentencePair(nugget, update, label=matches.match(nugget, update))
 
 
 class Nuggets(TextFragments):
@@ -135,8 +156,7 @@ class Nuggets(TextFragments):
 			toks = tokenize(rec["text"])
 			rec["tokens"] = stem(toks)
 			if self.vectorizep:
-				rec["sent_vec"], rec["wv_tokens"] = wordvec.get_sentvec(toks)
-				#rec["vec_sum"] = np.sum(rec["sent_vec"], axis=0)
+				rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(toks)
 			self.nuggets[rec["query_id"]][rec["id"]] = rec
 
 	def nuggetReader(self, filen):
@@ -197,8 +217,8 @@ class Updates(TextFragments):
 			toks = tokenize(rec["text"])
 			rec["tokens"] = stem(toks)
 			if self.vectorizep:
-				rec["sent_vec"], rec["wv_tokens"] = wordvec.get_sentvec(toks)
-				#rec["vec_sum"] = np.sum(rec["sent_vec"], axis=0)
+				rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(toks)
+				#rec["vec_sum"] = np.sum(rec["vector"], axis=0)
 			self.updates[rec["query_id"]][rec["id"]] = rec
 
 	def updateReader(self, filen):
@@ -225,6 +245,26 @@ class CLUpdates(Updates):
 					rec["text"] = rec["update_text"]
 					rec["duplicate_id"] = "NULL"
 					yield(rec)
+
+
+class Matches(object):
+	def __init__(self, filen):
+		matches = dict()
+		self.matches = matches
+		if filen is None:
+			return
+		for rec in TSVReader(filen):
+			matches[rec["nugget_id"] + rec["update_id"]] = rec
+
+	def __getitem__(self, key):
+		return self.matches[key]
+
+	def match(self, nid, uid):
+		if not isinstance(nid, str):
+			nid = nid["id"]
+		if not isinstance(uid, str):
+			uid = uid["id"]
+		return 1 if nid + uid in self.matches else 0
 
 
 class MatchWriter(object):
@@ -304,10 +344,10 @@ class MCMatchWriter(MatchWriter):
 																str(match.start), str(match.end),
 																"%g" % match.score,
 																update["text"], nugget["text"]))
-
-
-def load_wordvec():
-	return Word2Vec.load_word2vec_format(wordvecf, binary=True)
+#
+#
+#def load_wordvec():
+#	return Word2Vec.load_word2vec_format(wordvecf, binary=True)
 
 
 def UnicodeDictReader(utf8_data, **kwargs):
@@ -397,7 +437,8 @@ def tokenize(t):
 
 	# Remove nonword characters and lowercase everything
 	toks = [re.sub(r"[^\w\.\,\-]", "", x.lower()) for x in toks]
-	return [x for x in toks if x not in stopl]
+	#return [x for x in toks if x not in stopl]
+	return toks
 
 
 def stem(ts):
@@ -485,28 +526,20 @@ def shingle(stoks, ttoks, slop=12, lmbda=0.95):
 #		return emptyvec
 
 
-def vec_sim(s1, s2):
-	return 1 - distance.cosine(s1["vec_sum"], s2["vec_sum"]), None
-	#return distance.euclidean(vec1, vec2)
-
-
-def min_sim(s1, s2):
-	md = MinSim(s1["sent_vec"], s2["sent_vec"])
-	return md.match(), md
-
-
 def printd(string):
-	if debug:
+	if conf.debug:
 		print >> sys.stderr, string
 
 
 #def main(nf, uf, sf, vf):
 def main(args):
-	global debug, wordvec, wordvecf
-	if args.debug:
-		debug = True
+	global wordvec, wordvecf
+	conf.debug = args.debug or args.verbose
+	conf.verbose = args.verbose
+	conf.args = args
 	nf = args.nuggets
 	uf = args.updates
+	mf = args.matches
 	sf = args.shingles
 	vf = args.wordvec
 	ef = args.evalfile
@@ -535,44 +568,42 @@ def main(args):
 		printd("Reading word vector...")
 		#wordvec = load_wordvec()
 		wordvec = WordVec(wordvecf)
-		if args.sim == "minsim":
-			vecfn = MinSim
-			wordvec.normalize()
-		elif args.sim == "infsim":
-			vecfn = InfSim
-			wordvec.normalize()
-		else:
-			vecfn = VecSim
 
-	if dset == "ts":
-		nuggfn = Nuggets
-		updfn = Updates
-		outfn = MatchWriter
-	elif dset == "1click":
-		nuggfn = CLNuggets
-		updfn = CLUpdates
-		outfn = CLMatchWriter
-	elif dset == "mclick":
-		nuggfn = MCNuggets
-		updfn = Updates
-		outfn = MCMatchWriter
-	elif dset == "semeval":
+	#if dset == "ts":
+	#	nuggfn = Nuggets
+	#	updfn = Updates
+	#	outfn = MatchWriter
+	#elif dset == "1click":
+	#	nuggfn = CLNuggets
+	#	updfn = CLUpdates
+	#	outfn = CLMatchWriter
+	#elif dset == "mclick":
+	#	nuggfn = MCNuggets
+	#	updfn = Updates
+	#	outfn = MCMatchWriter
+	#elif dset == "semeval":
+	#	data = SemEvalDataset(args.input_data, args.evalfile)
+	#	outfn = data.writer
+	#	if vf is not None:
+	#		data.vectorize(wordvec)
+	#else:
+	#	nuggfn = MCNuggets
+	#	updfn = Updates
+	#	outfn = MCMatchWriter
+
+	if dset == "semeval":
 		data = SemEvalDataset(args.input_data, args.evalfile)
-		outfn = data.writer
+		#outfn = data.writer
 		if vf is not None:
 			data.vectorize(wordvec)
 	else:
-		nuggfn = MCNuggets
-		updfn = Updates
-		outfn = MCMatchWriter
-
-	if dset != "semeval":
 		printd("Processing Nuggets...")
-		nuggets = nuggfn(nf, vectorize=vf is not None)
+		#nuggets = nuggfn(nf, vectorize=vf is not None)
 
 		printd("Processing Updates...")
-		updates = updfn(uf, vectorize=vf is not None)
-		data = NuggetDataset(nuggets, updates)
+		#updates = updfn(uf, vectorize=vf is not None)
+		#data = NuggetDataset(nuggets, updates, mf)
+		data = NuggetDataset(nf, uf, mf, dset=dset, vectorize=vf is not None)
 
 	if vf and wvout is not None and wvout != wordvecf:
 		printd("Rereading word vectors to optimize...")
@@ -582,8 +613,9 @@ def main(args):
 		#else:
 		#	wv_toks = nuggets.wv_text() + updates.wv_text()
 		wordvec = WordVec(wordvecf, sentences=wv_toks, wvout=wvout, size=wordvec.originalsize)
-		if args.sim == "infsim":
+		if args.sim == "infsim" or args.comparator == "infsim":
 			wordvec.normalize()
+		data.vectorize(wordvec)
 		with open(wvout + ".vocab", 'w') as wh:
 			wh.write("\n".join(wordvec.vocab().keys()))
 		with open(wvout + ".toks", 'w') as wh:
@@ -608,12 +640,30 @@ def main(args):
 		vocab = data.wv_vocab()
 	logdf = wordvec.logdf(vocab)
 	logdffile = wordvecf + ".logdf"
-	if not os.path.exists(logdffile) or (os.path.getmtime(logdffile) < os.path.getmtime(wordvecf)):
-		np.savetxt(logdffile, logdf, delimiter=" ", fmt="%g")
-	data.normalize(vecfn, logdf)
+	#if not os.path.exists(logdffile) or (os.path.getmtime(logdffile) < os.path.getmtime(wordvecf)):
+	#	np.savetxt(logdffile, logdf, delimiter=" ", fmt="%g")
+	np.savetxt(logdffile, logdf, delimiter=" ", fmt="%g")
+
+	if args.comparator == "infsim" and args.sim != "infsim":
+		comparator = InfSim(logdf).pairwisedist
+		wordvec.normalize()
+	else:
+		comparator = args.comparator
+
+	if args.sim == "minsim":
+		matcher = MinDistSim
+	elif args.sim == "infsim":
+		matcher = InfSim
+		wordvec.normalize()
+	else:
+		matcher = VecSim
+
+	matcher = matcher(df=logdf, metric=comparator)
+	data.normalize(matcher, logdf)
 
 	printd("Finding matches...")
-	with outfn(sf) as sw, outfn(vf) as vw:
+	matches = []
+	with data.writer(sf) as sw, data.writer(vf) as vw:
 		mcnt = 0
 		timer = Timer()
 		for pair in data.test():
@@ -623,18 +673,16 @@ def main(args):
 					sw.write(pair, match)
 
 			if vf:
-				md = None
 				try:
-					md = vecfn(pair, logdf)
-					sim = md.match()
+					sim = matcher.match(pair)
+					matches.append((matcher.tsim, unicode(matcher)))
 					#printd("Match %0.4f for %s, %s" % (sim, nid, uid))
 				except ValueError:
 					sim = sim_thr
 				if sim < sim_thr:
 					sim = sim_thr
-				if md:
-					start = md.nmatches
-					end = md.end - md.start
+					start = matcher.start
+					end = matcher.end - matcher.start
 				else:
 					start = -1
 					end = len(pair.s2["tokens"]) - 1
@@ -646,6 +694,10 @@ def main(args):
 				print >>sys.stderr, "%g tmps" % (100 / timer.mark())
 			if limit and mcnt >= limit:
 				return
+
+		if conf.verbose:
+			for tsim, match in sorted(matches):
+				print match
 
 
 #if __name__ == '__main__':
@@ -661,6 +713,7 @@ def cmdline():
 		"input_data": "../results/nuggets.tsv",
 		"dataset": "auto",
 		"sim": "sum",
+		"comparator": "cosine",
 		"sim_thr": -10,
 		"limit": None,
 		}
@@ -674,6 +727,7 @@ def cmdline():
 	argparser.add_argument('-i', '--input_data', help='Dataset file/dir')
 	argparser.add_argument('-n', '--nuggets', help='Nuggets file/dir')
 	argparser.add_argument('-u', '--updates', help='Updates file/dir')
+	argparser.add_argument('-m', '--matches', help='Matches file/dir')
 	argparser.add_argument('-d', '--debug', action='store_true', help='Debug mode (lots of output)')
 	argparser.add_argument('--verbose', action='store_true', help='Even more output')
 	argparser.add_argument('-e', '--evalfile', help='Single Eval file (e.g. SICK)')
@@ -685,6 +739,8 @@ def cmdline():
 			'for faster subsequent runs (reused if exists, unless -f used).')
 	argparser.add_argument('--dataset', help='Type of Input/Output: ts,1click,mclick,semeval,auto (default: try to detect from filenames)')
 	argparser.add_argument('--sim', help='Similarity calculation to use, "minsim", "infsim" or "sum"')
+	argparser.add_argument('--comparator', help='Comparator to use, when appropriate: ' +
+		'"cosine" (default), "infsim", or any metric from scipy.spatial.distance.cdist')
 	argparser.add_argument('--sim_thr', type=float, help='Similarity threshold to use')
 	argparser.add_argument('--limit', type=int, help='Limit number of matches performed (for testing)')
 	main(argparser.parse_args(remaining_argv))

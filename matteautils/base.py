@@ -1,9 +1,12 @@
 import csv
 import sys
+import os
 import codecs
 import glob
+import config as conf
 
-__DEBUG__ = False
+__all__ = ["TSVReader", "UnicodeDictReader", "printd"]
+
 
 def UnicodeDictReader(utf8_data, **kwargs):
 	csv_reader = csv.DictReader(utf8_data, **kwargs)
@@ -17,10 +20,10 @@ def UnicodeDictReader(utf8_data, **kwargs):
 
 
 def bom_stripper(fh):
-	pos = fh.tell() 
+	pos = fh.tell()
 	for line in fh:
 		if pos == 0:
-			line = line.replace(codecs.BOM_UTF8,"")
+			line = line.replace(codecs.BOM_UTF8, "")
 		yield line
 		pos = fh.tell()
 
@@ -32,6 +35,7 @@ def TSVReader(filen, **kwargs):
 		for row in csv_reader:
 			yield {key: unicode(value, 'utf-8') for key, value in row.iteritems()}
 
+
 def getfiles(filenames):
 	if type(filenames) == str:
 		if os.path.exists(filenames):
@@ -40,13 +44,10 @@ def getfiles(filenames):
 			filenames = glob.glob(filenames)
 	return filenames
 
-def printd(string):
-	if __DEBUG__:
-		print >> sys.stderr, string
 
-def setdebug(debug=True):
-	global __DEBUG__
-	__DEBUG__ = debug
+def printd(string):
+	if conf.debug:
+		print >> sys.stderr, string
 
 
 def traverse(o, tree_types=(list, tuple)):

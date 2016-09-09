@@ -1,8 +1,8 @@
 class Matcher(object):
-	def __init__(self, pair, df):
+	def __init__(self, df=None, metric=None):
 		pass
 
-	def match(self):
+	def match(self, pair):
 		pass
 
 	@classmethod

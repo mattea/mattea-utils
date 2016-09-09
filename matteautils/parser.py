@@ -5,18 +5,15 @@ stemmer = None
 from collections import Counter
 from nltk import word_tokenize
 from nltk.stem.porter import PorterStemmer
-from nltk.corpus import stopwords
+#from nltk.corpus import stopwords
 stopl = None
 from gensim.models import Word2Vec
 import numpy as np
 import heapq
 #import math
 from scipy.spatial.distance import cosine
-import sys
-
-
-def printd(s):
-	print >>sys.stderr, s
+import sklearn.preprocessing
+from matteautils.base import printd
 
 
 class Match(object):
@@ -116,10 +113,18 @@ class WordVec(object):
 
 	def normalize(self):
 		wv = self.wordvec
-		#wv.syn0 = ((wv.syn0 + 1) / 2).astype(np.float32)
+		printd("Normalizing: wv is %s:" % (str(wv.syn0.shape)))
+		# Scale to [0,1]
+		wv.syn0 = sklearn.preprocessing.normalize(wv.syn0, axis=0)
+		# Shfit to Mean = 0, with scale reaching either -1 or +1
+		means = np.mean(wv.syn0, axis=0)
+		scales = 1 / np.maximum(abs(means), abs(1 - means))
+		wv.syn0 = ((wv.syn0 - means) / scales).astype(np.float32)
+		# Cut off negative and add new vector as positive
 		wv.syn0 = np.concatenate((np.maximum(0, wv.syn0), np.maximum(0, -wv.syn0)), axis=1)
 		self.size *= 2
 		wv.vector_size = self.size
+		printd("Done normalizing: wv is %s:" % (str(wv.syn0.shape)))
 
 	def get_sentvec(self, words):
 		sent_vec = []
@@ -132,7 +137,7 @@ class WordVec(object):
 				nwvec = self.get_wordvec(word)
 				if nwvec is not self.emptyvec:
 					wvec = nwvec
-					sent.append(word)
+					#sent.append(word)
 					witer.next()
 			if wvec is self.emptyvec:
 				word = words[i]
@@ -140,11 +145,12 @@ class WordVec(object):
 				if wvec is self.emptyvec:
 					word = stem(word)
 					wvec = self.get_wordvec(word)
-			if wvec is self.emptyvec:
-				printd("No vector for %s or %s:" % (words[i], word))
-			sent.append(word)
-			sent_vec.append(wvec)
-		return sent_vec, sent
+			if wvec is not self.emptyvec:
+				#if wvec is self.emptyvec:
+				#	printd("No vector for %s or %s:" % (words[i], word))
+				sent.append(word)
+				sent_vec.append(wvec)
+		return np.array(sent_vec), sent
 
 #	def get_wordvec(self, word):
 #		word = '/en/' + word
@@ -197,39 +203,38 @@ class GloveVec(WordVec):
 
 class Glove(object):
 	def __init__(self, text=None, vocab_file=None, vectors_file=None):
+		with open(vocab_file, 'r') as f:
+			words = [x.rstrip().split(' ')[0] for x in f.readlines()]
 
-    with open(vocab_file, 'r') as f:
-        words = [x.rstrip().split(' ')[0] for x in f.readlines()]
+			allvocab = Counter()
+			if text:
+				for sentence in text:
+					allvocab.update(sentence)
+			else:
+				allvocab.update(words)
 
-		allvocab = Counter()
-		if text:
-			for sentence in text:
-				allvocab.update(sentence)
-		else:
-			allvocab.update(words)
+		with open(vectors_file, 'r') as f:
+			vectors = {}
+			for line in f:
+				vals = line.rstrip().split(' ')
+				if words[vals[0]] in allvocab:
+					vectors[vals[0]] = [float(x) for x in vals[1:]]
 
-    with open(vectors_file, 'r') as f:
-        vectors = {}
-        for line in f:
-            vals = line.rstrip().split(' ')
-						if words[vals[0]] in allvocab:
-            	vectors[vals[0]] = [float(x) for x in vals[1:]]
+		vocab_size = len(words)
+		vocab = {w: idx for idx, w in enumerate(words) if w in allvocab}
+		ivocab = {idx: w for idx, w in enumerate(words) if w in allvocab}
 
-    vocab_size = len(words)
-    vocab = {w: idx if w in allvocab for idx, w in enumerate(words)}
-    ivocab = {idx: w if w in allvocab for idx, w in enumerate(words)}
+		vector_dim = len(vectors[ivocab[0]])
+		W = np.zeros((vocab_size, vector_dim))
+		for word, v in vectors.items():
+			if word == '<unk>':
+				continue
+			W[vocab[word], :] = v
 
-    vector_dim = len(vectors[ivocab[0]])
-    W = np.zeros((vocab_size, vector_dim))
-    for word, v in vectors.items():
-        if word == '<unk>':
-            continue
-        W[vocab[word], :] = v
-
-    # normalize each word vector to unit variance
-    self.W_norm = np.zeros(W.shape)
-    d = (np.sum(W ** 2, 1) ** (0.5))
-    self.W_norm = (W.T / d).T
+		# normalize each word vector to unit variance
+		self.W_norm = np.zeros(W.shape)
+		d = (np.sum(W ** 2, 1) ** (0.5))
+		self.W_norm = (W.T / d).T
 		self.vocab = vocab
 		self.ivocab = ivocab
 
@@ -328,15 +333,16 @@ def gindex(s, ch):
 
 
 def tokenize(t):
-	global stopl
+	#global stopl
 	try:
 		toks = word_tokenize(t)
 	except Exception:
 		toks = t.strip().split()
 	toks = [x.lower() for x in toks]
-	if not stopl:
-		stopl = set(stopwords.words('english'))
-	return [x for x in toks if x not in stopl]
+	#if not stopl:
+	#	stopl = set(stopwords.words('english'))
+	#return [x for x in toks if x not in stopl]
+	return toks
 
 
 def stem(ts):

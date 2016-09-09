@@ -120,12 +120,12 @@ class SentencePair(object):
 		return self.__len
 
 	def normalize(self, matcher, df):
-		self.s1["sent_vec"], self.s1["sent_sum"] = matcher.normalize(self.s1["sent_vec"], df)
-		self.s2["sent_vec"], self.s2["sent_sum"] = matcher.normalize(self.s2["sent_vec"], df)
+		self.s1["vector"], self.s1["vector_sum"] = matcher.normalize(self.s1["vector"], df)
+		self.s2["vector"], self.s2["vector_sum"] = matcher.normalize(self.s2["vector"], df)
 
 	def vectorize(self, wordvec):
-		self.s1["sent_vec"], self.s1["wv_tokens"] = wordvec.get_sentvec(self.s1["tokens"])
-		self.s2["sent_vec"], self.s2["wv_tokens"] = wordvec.get_sentvec(self.s2["tokens"])
+		self.s1["vector"], self.s1["wv_tokens"] = wordvec.get_sentvec(self.s1["tokens"])
+		self.s2["vector"], self.s2["wv_tokens"] = wordvec.get_sentvec(self.s2["tokens"])
 
 
 class SemEvalWriter(MatchWriter):

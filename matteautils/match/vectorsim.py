@@ -79,13 +79,12 @@ class MinDistSim(Matcher):
 			self.s1 = pair.s2
 			self.s2 = pair.s1
 		self.pair = pair
-		self.minlen = min(self.dist.shape)
-		self.maxlen = max(self.dist.shape)
 		#self.dist = pairdist(self.s1["vector"], self.s2["vector"], fn=self.metric)
 		#self.dist = pairdist(self.s1, self.s2, fn=self.metric)
-		self.dist = self.metric(self.s1, self.s2)
+		dist = self.metric(self.s1, self.s2)
+		self.minlen = min(dist.shape)
+		self.maxlen = max(dist.shape)
 
-		dist = self.dist
 		self.matchv = np.zeros(dist.shape, int)
 		np.fill_diagonal(self.matchv, 1)
 		self.tsim = float('-inf')
@@ -140,8 +139,8 @@ class MinDistSim(Matcher):
 		for i in range(matches.shape[0]):
 			for j in range(matches.shape[1]):
 				if matches[i, j]:
-					tdist += self.dist[i, j]
-					print "%s\t%s\t%0.4f" % (s1tok[i], s2tok[j], self.dist[i, j])
+					tdist += dist[i, j]
+					printd("%s\t%s\t%0.4f" % (s1tok[i], s2tok[j], dist[i, j]), level=1)
 					nmatches += 1
 					matcharr[i] = j
 					if j < mstart:
@@ -237,15 +236,19 @@ class InfSim(Matcher):
 
 	def pairwisedist(self, s1, s2):
 		#Must create the "vector" and "vector_sum" for each word, rather than for each sentence
-		dists = np.zeros((len(s1), len(s2)))
-		for wi1, w1, v1 in enumerate(izip(s1["wv_tokens"], s1["vector"])):
-			for wi2, w2, v2 in enumerate(izip(s2["wv_tokens"], s2["vector"])):
+		dists = np.zeros((len(s1["wv_tokens"]), len(s2["wv_tokens"])))
+		for wi1, (w1, v1) in enumerate(izip(s1["wv_tokens"], s1["vector"])):
+			for wi2, (w2, v2) in enumerate(izip(s2["wv_tokens"], s2["vector"])):
 				self.s1 = v1
 				self.s2 = v2
-				# Probably should memoize
 				self.ts1 = self.vectorsum(w1, v1)
 				self.ts2 = self.vectorsum(w2, v2)
 				dists[wi1, wi2] = 1 - self.domatch()
+				#TODO could multiply by term based on wi1/wi2 (distance penalty)...
+				if dists[wi1, wi2] < 0:
+					dists[wi1, wi2] = 0
+					#printd("Hmm, negative dist %g" % dists[wi1, wi2])
+					# Annoying rounding errors, e.g. -2.22045e-16
 		return dists
 
 	def vectorsum(self, word, wv):

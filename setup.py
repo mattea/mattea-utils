@@ -109,6 +109,7 @@ setup(
     entry_points={
         'console_scripts': [
             'shingle=matteautils.match.shingle:cmdline',
+            'featurize=matteautils.match.featurize:cmdline',
         ],
     },
 )

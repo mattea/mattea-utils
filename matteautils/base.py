@@ -45,8 +45,8 @@ def getfiles(filenames):
 	return filenames
 
 
-def printd(string):
-	if conf.debug:
+def printd(string, level=0):
+	if (level == 0 and conf.debug) or conf.verbose:
 		print >> sys.stderr, string
 
 

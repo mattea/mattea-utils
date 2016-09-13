@@ -24,7 +24,7 @@ from matteautils.match.vectorsim import MinDistSim, InfSim, VecSim
 from matteautils.parser import WordVec
 from matteautils.dataset import Dataset
 from matteautils.dataset.semeval import SemEvalDataset, SentencePair
-from matteautils.base import TSVReader
+from matteautils.base import TSVReader, printd
 import matteautils.config as conf
 
 csv.field_size_limit(sys.maxsize)
@@ -297,6 +297,22 @@ class MatchWriter(object):
 																update["text"], nugget["text"]))
 
 
+class FeatureWriter(object):
+
+	def writeheader(self):
+		pass
+		print >>self.sh, "\t".join(("Label", "MatchScore", "WV1Min", "WV1Max", "WV1Sum", "WV1Avg", "WV2Min", "WV2Max", "WV2Sum", "WV2Avg"))
+
+	def write(self, pair, match):
+		nugget = pair.s1
+		update = pair.s2
+		qid = nugget["query_id"]
+		print >>self.sh, "\t".join((qid, update["id"], nugget["id"],
+																str(match.start), str(match.end),
+																str(match.autop), "%g" % match.score,
+																update["text"], nugget["text"]))
+
+
 class CLMatchWriter(MatchWriter):
 
 	def __init__(self, sf):
@@ -526,11 +542,6 @@ def shingle(stoks, ttoks, slop=12, lmbda=0.95):
 #		return emptyvec
 
 
-def printd(string):
-	if conf.debug:
-		print >> sys.stderr, string
-
-
 #def main(nf, uf, sf, vf):
 def main(args):
 	global wordvec, wordvecf
@@ -568,6 +579,16 @@ def main(args):
 		printd("Reading word vector...")
 		#wordvec = load_wordvec()
 		wordvec = WordVec(wordvecf)
+
+	if args.sim == "minsim":
+		matcher = MinDistSim
+	elif args.sim == "infsim":
+		matcher = InfSim
+	else:
+		matcher = VecSim
+
+	if args.sim == "infsim" or args.comparator == "infsim":
+		wordvec.normalize()
 
 	#if dset == "ts":
 	#	nuggfn = Nuggets
@@ -646,17 +667,8 @@ def main(args):
 
 	if args.comparator == "infsim" and args.sim != "infsim":
 		comparator = InfSim(logdf).pairwisedist
-		wordvec.normalize()
 	else:
 		comparator = args.comparator
-
-	if args.sim == "minsim":
-		matcher = MinDistSim
-	elif args.sim == "infsim":
-		matcher = InfSim
-		wordvec.normalize()
-	else:
-		matcher = VecSim
 
 	matcher = matcher(df=logdf, metric=comparator)
 	data.normalize(matcher, logdf)
@@ -673,12 +685,14 @@ def main(args):
 					sw.write(pair, match)
 
 			if vf:
+				printd("Matching pair %s" % (pair.pid), level=1)
 				try:
 					sim = matcher.match(pair)
 					matches.append((matcher.tsim, unicode(matcher)))
-					#printd("Match %0.4f for %s, %s" % (sim, nid, uid))
-				except ValueError:
+				except ValueError, err:
+					printd(err)
 					sim = sim_thr
+				printd("Match %0.4f for %s, %s" % (sim, pair.sid1, pair.sid2))
 				if sim < sim_thr:
 					sim = sim_thr
 					start = matcher.start
@@ -739,6 +753,7 @@ def cmdline():
 			'for faster subsequent runs (reused if exists, unless -f used).')
 	argparser.add_argument('--dataset', help='Type of Input/Output: ts,1click,mclick,semeval,auto (default: try to detect from filenames)')
 	argparser.add_argument('--sim', help='Similarity calculation to use, "minsim", "infsim" or "sum"')
+	argparser.add_argument('--learn', help='Write features for a learning algorithm')
 	argparser.add_argument('--comparator', help='Comparator to use, when appropriate: ' +
 		'"cosine" (default), "infsim", or any metric from scipy.spatial.distance.cdist')
 	argparser.add_argument('--sim_thr', type=float, help='Similarity threshold to use')

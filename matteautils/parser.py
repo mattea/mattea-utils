@@ -114,14 +114,15 @@ class WordVec(object):
 	def normalize(self):
 		wv = self.wordvec
 		printd("Normalizing: wv is %s:" % (str(wv.syn0.shape)))
-		# Scale to [0,1]
-		wv.syn0 = sklearn.preprocessing.normalize(wv.syn0, axis=0)
-		# Shfit to Mean = 0, with scale reaching either -1 or +1
-		means = np.mean(wv.syn0, axis=0)
-		scales = 1 / np.maximum(abs(means), abs(1 - means))
-		wv.syn0 = ((wv.syn0 - means) / scales).astype(np.float32)
+		# Shfit to Mean = 0
+		#means = np.mean(wv.syn0, axis=0)
+		#scales = 1 / np.maximum(abs(means), abs(1 - means))
+		#wv.syn0 = ((wv.syn0 - means) / scales).astype(np.float32)
+		wv.syn0 -= np.mean(wv.syn0, axis=0)
 		# Cut off negative and add new vector as positive
 		wv.syn0 = np.concatenate((np.maximum(0, wv.syn0), np.maximum(0, -wv.syn0)), axis=1)
+		# Unit norm
+		wv.syn0 = sklearn.preprocessing.normalize(wv.syn0, axis=0)
 		self.size *= 2
 		wv.vector_size = self.size
 		printd("Done normalizing: wv is %s:" % (str(wv.syn0.shape)))

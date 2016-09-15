@@ -9,8 +9,10 @@ import traceback
 #from itertools import chain
 import numpy as np
 #from sklearn.tree import DecisionTreeRegressor
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.decomposition import KernelPCA
 from sklearn.externals import joblib
+from sklearn.pipeline import Pipeline
 from scipy.spatial import distance
 from scipy.stats import pearsonr, spearmanr, kendalltau
 from sklearn.metrics import mean_squared_error
@@ -19,7 +21,8 @@ from itertools import izip
 #from scipy.spatial import distance
 from matteautils.match.vectorsim import MinDistSim, InfSim, VecSim
 from matteautils.parser import WordVec
-from matteautils.dataset.semeval import SemEvalDataset
+#from matteautils.dataset.semeval import SemEvalDataset
+import matteautils.dataset as dataset
 from matteautils.base import printd
 import matteautils.config as conf
 
@@ -86,7 +89,8 @@ def formatFeature(f):
 
 #featurefns = [wvSum, wvMin, wvMax, wvAvg, wvCos, wvDiff, wvEuc]
 #featurefns = [wvCos, wvEuc, wvMkow]
-featurefns = [wvCos, wvEuc, wvMkow, wvMaxDiff, wvMinDiff, wvIdent]
+featurefns = [wvCos, wvEuc, wvMkow, wvMaxDiff, wvMinDiff]
+#featurefns = [wvCos, wvEuc, wvMkow, wvMaxDiff, wvMinDiff, wvIdent]
 accumulators = [wvSum, wvMin, wvMax, wvAvg]
 
 
@@ -108,12 +112,93 @@ def featurize(p):
 	return x
 
 
+class FeatureSet(object):
+	def __init__(self, data):
+		self.train = []
+		self.test = []
+		self.trainlabels = []
+		self.testlabels = []
+		self.data = data
+
+		for pair in data.train():
+			self.trainlabels.append(pair.label)
+			self.train.append(featurize(pair))
+		for pair in data.test():
+			self.testlabels.append(pair.label)
+			self.test.append(featurize(pair))
+
+		#self.trainlabels = np.array(self.trainlabels, dtype=np.float32)
+		#self.testlabels = np.array(self.testlabels, dtype=np.float32)
+
+	def addMatcher(self, matcher):
+		for datum, pair in izip(self.train, self.data.train()):
+			try:
+				sim = matcher.match(pair)
+			except ValueError, err:
+				printd(err)
+			datum.append(sim)
+
+		for datum, pair in izip(self.test, self.data.test()):
+			try:
+				sim = matcher.match(pair)
+			except ValueError, err:
+				printd(err)
+			datum.append(sim)
+
+	def write(self, outf):
+		with open(outf + ".train", 'w') as fh:
+			for label, x in izip(self.trainlabels, self.train):
+				print >>fh, "%g\t" % label,
+				print >>fh, "\t".join(["%g" % v for v in x])
+
+		with open(outf + ".test", 'w') as fh:
+			for label, x in izip(self.testlabels, self.test):
+				print >>fh, "%g\t" % label,
+				print >>fh, "\t".join(["%g" % v for v in x])
+
+	def freeze(self):
+		self.train = np.asarray(self.train, dtype=np.float32)
+		self.test = np.asarray(self.test, dtype=np.float32)
+		self.trainlabels = np.asarray(self.trainlabels, dtype=np.float32)
+		self.testlabels = np.asarray(self.testlabels, dtype=np.float32)
+
+
+def evalData(model, data, labels):
+	obs = model.predict(data)
+	exp = labels
+
+	pearsonsR, pearsonsP = pearsonr(obs, exp)
+	spearmansR, spearmansP = spearmanr(obs, exp)
+	ktau, ktauP = kendalltau(obs, exp)
+	mse = mean_squared_error(exp, obs)
+	print "Pearson's: %g (%g)" % (pearsonsR, pearsonsP)
+	print "Spearman's: %g (%g)" % (spearmansR, spearmansP)
+	print "Kendall's: %g (%g)" % (ktau, ktauP)
+	print "MSE: %g" % (mse)
+
+
 def main(args):
+	wordvecf = '/huge1/sourcedata/word2vec/google/GoogleNews-vectors-negative300.bin'
 	conf.debug = args.debug
 	conf.verbose = args.verbose
-	data = SemEvalDataset(args.input_data, args.evalfile)
-	wordvec = WordVec(args.wvfile)
+	if args.alphas == "auto":
+		pass  # TODO
+	else:
+		conf.alphas = [float(x) for x in args.alphas.split(",")]
+	data = dataset.Dataset.load(args.input_data, args.dataset)
+	#data = SemEvalDataset(args.input_data)
+
+	wvout = args.wvfile
+	if os.path.exists(wvout):
+		wordvecf = wvout
+	wordvec = WordVec(wordvecf)
 	data.vectorize(wordvec)
+
+	if wvout != wordvecf:
+		printd("Rereading word vectors to optimize...")
+		wv_toks = data.wv_sentences()
+		wordvec = WordVec(wordvecf, sentences=wv_toks, wvout=wvout, size=wordvec.originalsize)
+		data.vectorize(wordvec)
 
 	try:
 		max_features = int(args.max_features)
@@ -124,80 +209,60 @@ def main(args):
 			max_features = args.max_features
 
 	# Train data
-	trainlabels = []
-	traindata = []
-	for pair in data.train():
-		trainlabels.append(pair.label)
-		traindata.append(featurize(pair))
+	fs = FeatureSet(data)
+	#trainlabels = []
+	#traindata = []
+	#for pair in data.train():
+	#	trainlabels.append(pair.label)
+	#	traindata.append(featurize(pair))
 
 	# Test data
-	testlabels = []
-	testdata = []
-	for pair in data.test():
-		testdata.append(featurize(pair))
-		testlabels.append(pair.label)
+	#testlabels = []
+	#testdata = []
+	#for pair in data.test():
+	#	testdata.append(featurize(pair))
+	#	testlabels.append(pair.label)
+
+	comparator = 'cosine'
+	matcher = MinDistSim(metric=comparator)
+	fs.addMatcher(matcher)
 
 	# We normalize after so primary features are raw word vectors
 	#wordvec.normalize()
-	comparator = 'cosine'
-	matcher = MinDistSim(metric=comparator)
+	# InfSim
+	wordvec.normalize()
+	logdf = wordvec.logdf(data.wv_vocab())
+	matcher = InfSim(df=logdf)
+	data.vectorize(wordvec)
+	data.normalize(matcher, logdf)
+	fs.addMatcher(matcher)
 
-	for datum, pair in izip(traindata, data.train()):
-		try:
-			sim = matcher.match(pair)
-		except ValueError, err:
-			printd(err)
-		datum.append(sim)
-
-	for datum, pair in izip(testdata, data.test()):
-		try:
-			sim = matcher.match(pair)
-		except ValueError, err:
-			printd(err)
-		datum.append(sim)
+	fs.freeze()
 
 	if (not args.force) and args.model and os.path.exists(args.model):
-		dtree = joblib.load(args.model)
+		model = joblib.load(args.model)
 	else:
 		if args.features and (args.force or not os.path.exists(args.features)):
-			with open(args.features) as fh:
-				for label, x in izip(trainlabels, traindata):
-					print >>fh, "%g\t" % label,
-					for f in x:
-						print >>fh, "".join(["%g\t" % v for v in f]),
+			fs.write(args.features)
 		#dtree = DecisionTreeRegressor()
-		dtree = RandomForestClassifier(max_depth=args.max_depth, n_estimators=args.max_trees, oob_score=True, max_features=max_features, n_jobs=-1)
-		dtree.fit(traindata, trainlabels)
+		#kpca = KernelPCA(kernel="rbf", gamma=10)
+		model = RandomForestRegressor(max_depth=args.max_depth, n_estimators=args.max_trees, oob_score=True, max_features=max_features, n_jobs=-1)
+		#model = Pipeline(steps=[('pca', kpca), ('dtree', dtree)])
+		printd("Running Pipeline")
+		model.fit(fs.train, fs.trainlabels)
+		#X_kpca = kpca.fit_transform(X)
+		#dtree.fit(traindata, trainlabels)
 		if args.model:
-			joblib.dump(dtree, args.model)
+			joblib.dump(model, args.model)
 
+	printd("Evaluating")
 	# train accuracy
-	obs = dtree.predict(traindata)
-	exp = trainlabels
-
-	pearsonsR, pearsonsP = pearsonr(obs, exp)
-	spearmansR, spearmansP = spearmanr(obs, exp)
-	ktau, ktauP = kendalltau(obs, exp)
-	mse = mean_squared_error(exp, obs)
 	print "Train Accuracy"
-	print "Pearson's: %g (%g)" % (pearsonsR, pearsonsP)
-	print "Spearman's: %g (%g)" % (spearmansR, spearmansP)
-	print "Kendall's: %g (%g)" % (ktau, ktauP)
-	print "MSE: %g" % (mse)
+	evalData(model, fs.train, fs.trainlabels)
 
 	# test accuracy
-	obs = dtree.predict(testdata)
-	exp = testlabels
-
-	pearsonsR, pearsonsP = pearsonr(obs, exp)
-	spearmansR, spearmansP = spearmanr(obs, exp)
-	ktau, ktauP = kendalltau(obs, exp)
-	mse = mean_squared_error(exp, obs)
 	print "Test Accuracy"
-	print "Pearson's: %g (%g)" % (pearsonsR, pearsonsP)
-	print "Spearman's: %g (%g)" % (spearmansR, spearmansP)
-	print "Kendall's: %g (%g)" % (ktau, ktauP)
-	print "MSE: %g" % (mse)
+	evalData(model, fs.test, fs.testlabels)
 
 
 #if __name__ == '__main__':
@@ -217,6 +282,7 @@ def cmdline():
 		"sim_thr": -10,
 		"max_depth": 4,
 		"max_trees": 40,
+		"alphas": "auto",
 		"max_features": "auto",
 		"limit": None,
 		}
@@ -228,15 +294,16 @@ def cmdline():
 	argparser = argparse.ArgumentParser(description='Automatically match using shingles and word vectors', parents=[conf_parser])
 	argparser.set_defaults(**defaults)
 	argparser.add_argument('-i', '--input_data', help='Dataset file/dir')
+	argparser.add_argument('--dataset', help='The name of the dataset (otherwise inferred from files)')
 	argparser.add_argument('-d', '--debug', action='store_true', help='Debug mode (lots of output)')
 	argparser.add_argument('--verbose', action='store_true', help='Even more output')
-	argparser.add_argument('-e', '--evalfile', help='Single Eval file (e.g. SICK)')
 	argparser.add_argument('-v', '--wordvec', help='Write out wordvec to file/dir')
 	argparser.add_argument('--model', help='Write out model to file, restore if exists')
 	argparser.add_argument('--features', help='Write out features to file, if does exists')
 	argparser.add_argument('--frequencies', help='Read from word frequencies JSON file')
 	argparser.add_argument('-f', '--force', action='store_true', help='Relearning and rewriting files')
 	argparser.add_argument('--max_depth', type=int, help='Max depth of a tree')
+	argparser.add_argument('--alphas', help='Weight of each wordvec')
 	argparser.add_argument('--max_trees', type=int, help='Max number of trees (for random forests)')
 	argparser.add_argument('--max_features', help='Max number of features to consider for split (for random forests)')
 	argparser.add_argument('-w', '--wvfile', help='Store minimal version of wordvec file after processing, ' +

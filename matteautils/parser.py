@@ -1,6 +1,7 @@
 #from peak.util.imports import lazyModule
 from __future__ import division
 import functools
+from itertools import izip
 stemmer = None
 from collections import Counter
 from nltk import word_tokenize
@@ -72,6 +73,43 @@ class NumberWord(object):
 			return 0
 		else:
 			return abs(self.num - wv.num) / max(abs(self.num), abs(wv.num))
+
+
+class MultiWordVec(object):
+	def __init__(self, wfa=None, **kwargs):
+		wvs = []
+		for wf in wfa:
+			wvs.append(WordVec(wf=wf, **kwargs))
+
+		self.wvs = wvs
+
+	def get_sentvec(self, words):
+		v1, sent = self.wvs[0].get_sentvec(words)
+		vs = [v1]
+		for wv in self.wvs[1:]:
+			vc = []
+			for word in sent:
+				vc.append(wv.get_wordvec(word))
+			vs.append(vc)
+		return vs, sent
+
+	def logdf(self, tf):
+		return [x.logdf(tf) for x in self.wvs]
+
+	def normalize(self):
+		for wv in self.wvs:
+			wv.normalize()
+
+	def trim(self, trimfn):
+		for wv in self.wvs:
+			wv.scale_vocab(trim_rule=trimfn)
+
+	def save(self, wvfiles):
+		for wv, wvf in izip(self.wvs, wvfiles):
+			wv.save_word2vec_format(wvf, binary=True)
+
+	def vocab(self):
+		return self.wvs[0].vocab
 
 
 class WordVec(object):

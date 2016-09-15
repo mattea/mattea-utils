@@ -1,7 +1,6 @@
 #!/usr/bin/python
 from __future__ import division
 import csv
-import glob
 import argparse
 import ConfigParser
 import codecs
@@ -9,22 +8,15 @@ import json
 import sys
 import os
 import time
-from collections import defaultdict, Counter
-#from itertools import chain
 import heapq
-import re
 import numpy as np
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-from nltk.stem.porter import PorterStemmer
 from functools import total_ordering
 #from gensim.models import Word2Vec
 #from scipy.spatial import distance
 from matteautils.match.vectorsim import MinDistSim, InfSim, VecSim
 from matteautils.parser import WordVec
+from matteautils.base import printd
 from matteautils.dataset import Dataset
-from matteautils.dataset.semeval import SemEvalDataset, SentencePair
-from matteautils.base import TSVReader, printd
 import matteautils.config as conf
 
 csv.field_size_limit(sys.maxsize)
@@ -38,263 +30,9 @@ wordvec = []
 
 min_score = 0.1
 
-stopl = set(stopwords.words('english'))
-stemmer = PorterStemmer()
-
 #if sys.stdout.encoding is None:
 #	os.putenv("PYTHONIOENCODING", 'UTF-8')
 #	os.execv(sys.executable, ['python'] + sys.argv)
-
-
-class TextFragments(object):
-
-	def __iter__(self):
-		for q in self.data.itervalues():
-			for item in q.itervalues():
-				yield item
-
-	def calc_vectors(self):
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
-				rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(rec["tokens"])
-
-	def text(self):
-		res = []
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
-				res.append(rec["tokens"])
-		return res
-
-	def wv_text(self):
-		#res = []
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
-				#res.append(rec["wv_tokens"])
-				for word in rec["wv_tokens"]:
-					yield word
-		#return res
-
-	def wv_sentences(self):
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
-				yield rec["wv_tokens"]
-
-	def wv_vocab(self):
-		res = Counter()
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
-				res.update(rec["wv_tokens"])
-		return res
-
-	def normalize(self, matcher, df):
-		printd("Normalizing dset")
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
-				rec["vector"], rec["vector_sum"] = matcher.normalize(rec["vector"], df)
-
-	def vectorize(self, wordvec):
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
-				rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(rec["tokens"])
-
-
-class Superset(object):
-	def __init__(self, *args):
-		self.items = args
-
-	def __len__(self):
-		return sum([len(x) for x in self.items])
-
-	def __iter__(self):
-		return self.items.__iter__()
-
-
-class NuggetDataset(Dataset):
-	def __init__(self, nf, uf, mf=None, dset="", vectorize=True):
-		printd("Loading dataset")
-		if dset == "ts":
-			self.nuggets = Nuggets(nf, vectorize)
-			self.updates = Updates(uf, vectorize)
-			self.matches = Matches(mf)
-			self.writer = MatchWriter
-		elif dset == "1click":
-			self.nuggets = CLNuggets(nf, vectorize)
-			self.updates = CLUpdates(uf, vectorize)
-			# TODO(mattea): Fix for 1CLICK
-			self.matches = Matches(mf)
-			self.writer = CLMatchWriter
-		elif dset == "mclick":
-			self.nuggets = MCNuggets(nf, vectorize)
-			self.updates = Updates(uf, vectorize)
-			self.matches = Matches(mf)
-			self.writer = MCMatchWriter
-		else:
-			self.nuggets = Nuggets(nf, vectorize)
-			self.updates = Updates(uf, vectorize)
-			self.matches = Matches(mf)
-			self.writer = MatchWriter
-
-		self.data = Superset(self.nuggets, self.updates)
-
-	def test(self):
-		matches = self.matches
-		for nugget in self.nuggets:
-			for update in self.updates:
-				yield SentencePair(nugget, update, label=matches.match(nugget, update))
-
-
-class Nuggets(TextFragments):
-
-	def __init__(self, filen, vectorize=False):
-		self.nuggets = defaultdict(dict)
-		self.vectorizep = vectorize
-		self.read(filen)
-		self.data = self.nuggets
-
-	def read(self, filen):
-		for rec in self.nuggetReader(filen):
-			toks = tokenize(rec["text"])
-			rec["tokens"] = stem(toks)
-			if self.vectorizep:
-				rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(toks)
-			self.nuggets[rec["query_id"]][rec["id"]] = rec
-
-	def nuggetReader(self, filen):
-		with open(filen) as nh:
-			for rec in UnicodeDictReader(nh, delimiter="\t", quoting=csv.QUOTE_NONE):
-				rec["text"] = rec["nugget_text"]
-				rec["id"] = rec["nugget_id"]
-				yield(rec)
-
-
-class TSNuggets(Nuggets):
-
-	def nuggetReader(self, filen):
-		with open(filen) as nh:
-			for rec in UnicodeDictReader(nh, delimiter="\t", quoting=csv.QUOTE_NONE):
-				rec["text"] = rec["nugget_text"]
-				rec["id"] = rec["nugget_id"]
-				yield(rec)
-
-
-class CLNuggets(Nuggets):
-
-	def nuggetReader(self, filen):
-		vsfields = ["nugget_id", "impt", "length", "dep", "nugget_text"]
-		for nf in glob.glob(filen):
-			qid = "1C2-E-" + os.path.basename(nf).replace(".vitalstrings.txt", "")
-			with open(nf) as nh:
-				for rec in UnicodeDictReader(nh, fieldnames=vsfields, delimiter="\t",
-																			quoting=csv.QUOTE_NONE):
-					rec["query_id"] = qid
-					rec["text"] = rec["nugget_text"]
-					rec["id"] = rec["nugget_id"]
-					yield(rec)
-
-
-class MCNuggets(Nuggets):
-
-	def nuggetReader(self, filen):
-		with open(filen) as nh:
-			for rec in UnicodeDictReader(nh, delimiter="\t", quoting=csv.QUOTE_NONE):
-				rec["text"] = rec["vs_text"]
-				rec["id"] = rec["vs_id"]
-				yield(rec)
-
-
-class Updates(TextFragments):
-
-	def __init__(self, filen, vectorize=False):
-		self.updates = defaultdict(dict)
-		self.vectorizep = vectorize
-		self.read(filen)
-		self.data = self.updates
-
-	def read(self, filen):
-		for rec in self.updateReader(filen):
-			if rec["duplicate_id"] != "NULL":
-				continue
-			toks = tokenize(rec["text"])
-			rec["tokens"] = stem(toks)
-			if self.vectorizep:
-				rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(toks)
-				#rec["vec_sum"] = np.sum(rec["vector"], axis=0)
-			self.updates[rec["query_id"]][rec["id"]] = rec
-
-	def updateReader(self, filen):
-		with open(filen) as nh:
-			for rec in UnicodeDictReader(nh, delimiter="\t", quoting=csv.QUOTE_NONE):
-				rec["text"] = rec["update_text"]
-				rec["id"] = rec["update_id"]
-				yield(rec)
-
-
-class CLUpdates(Updates):
-	def updateReader(self, filen):
-		ufields = ["query_id", "type", "update_text"]
-		for uf in glob.glob(filen):
-			update_id = os.path.basename(uf).replace(".tsv", "")
-			with open(uf) as uh:
-				uh.readline()  # sysdesc
-				for rec in UnicodeDictReader(uh, fieldnames=ufields, delimiter="\t",
-																			quoting=csv.QUOTE_NONE):
-					if rec["type"] != "OUT":
-						continue
-					rec["update_id"] = update_id
-					rec["id"] = update_id
-					rec["text"] = rec["update_text"]
-					rec["duplicate_id"] = "NULL"
-					yield(rec)
-
-
-class Matches(object):
-	def __init__(self, filen):
-		matches = dict()
-		self.matches = matches
-		if filen is None:
-			return
-		for rec in TSVReader(filen):
-			matches[rec["nugget_id"] + rec["update_id"]] = rec
-
-	def __getitem__(self, key):
-		return self.matches[key]
-
-	def match(self, nid, uid):
-		if not isinstance(nid, str):
-			nid = nid["id"]
-		if not isinstance(uid, str):
-			uid = uid["id"]
-		return 1 if nid + uid in self.matches else 0
-
-
-class MatchWriter(object):
-
-	def __init__(self, sf):
-		self.sh = codecs.open(sf or os.devnull, 'w', 'utf-8')
-
-	def __enter__(self):
-		if self.sh:
-			self.sh.__enter__()
-			self.writeheader()
-		return self
-
-	def __exit__(self, ctype, value, traceback):
-		if self.sh:
-			self.sh.__exit__(ctype, value, traceback)
-
-	def writeheader(self):
-		print >>self.sh, "\t".join(("QueryID", "UpdateID", "NuggetID", "Start",
-																"End", "AutoP", "Score", "Update_Text",
-																"Nugget_Text"))
-
-	def write(self, pair, match):
-		nugget = pair.s1
-		update = pair.s2
-		qid = nugget["query_id"]
-		print >>self.sh, "\t".join((qid, update["id"], nugget["id"],
-																str(match.start), str(match.end),
-																str(match.autop), "%g" % match.score,
-																update["text"], nugget["text"]))
 
 
 class FeatureWriter(object):
@@ -312,64 +50,10 @@ class FeatureWriter(object):
 																str(match.autop), "%g" % match.score,
 																update["text"], nugget["text"]))
 
-
-class CLMatchWriter(MatchWriter):
-
-	def __init__(self, sf):
-		self.sh = None
-		self.qid = None
-		self.sd = sf
-		if sf and not os.path.exists(sf):
-			os.makedirs(sf)
-
-	def writeheader(self):
-		pass
-
-	def write(self, pair, match):
-		nugget = pair.s1
-		update = pair.s2
-		qid = nugget["query_id"]
-		if qid != self.qid:
-			if self.sh:
-				self.sh.__exit__(None, None, None)
-			if self.sd:
-				sf = os.path.join(self.sd, "%s.matches.txt" % (qid.replace("1C2-E-", "")))
-			else:
-				sf = os.devnull
-			self.sh = codecs.open(sf, 'w', 'utf-8')
-			self.qid = qid
-		print >>self.sh, "\t".join((update["id"], nugget["id"],
-																str(match.start), str(match.end),
-																"%g" % match.score,
-																update["text"], nugget["text"]))
-
-
-class MCMatchWriter(MatchWriter):
-
-	def writeheader(self):
-		print >>self.sh, "\t".join(("query_id", "vs_id", "update_id",
-																"update_source", "vs_start", "vs_end",
-																"score", "update_text", "vs_text"))
-
-	def write(self, pair, match):
-		nugget = pair.s1
-		update = pair.s2
-		qid = nugget["query_id"]
-		print >>self.sh, "\t".join((qid, nugget["id"], update["id"],
-																update["update_source"],
-																str(match.start), str(match.end),
-																"%g" % match.score,
-																update["text"], nugget["text"]))
 #
 #
 #def load_wordvec():
 #	return Word2Vec.load_word2vec_format(wordvecf, binary=True)
-
-
-def UnicodeDictReader(utf8_data, **kwargs):
-	csv_reader = csv.DictReader(utf8_data, **kwargs)
-	for row in csv_reader:
-		yield {key: unicode(value, 'utf-8') for key, value in row.iteritems()}
 
 
 class Timer(object):
@@ -439,26 +123,6 @@ class PQueue(object):
 
 def gindex(s, ch):
 	return [i for i, ltr in enumerate(s) if ltr == ch]
-
-
-def tokenize(t):
-	# separate numbers from other text
-	# TODO(mattea): should account for sci-not (1e3)
-	t = re.sub(r"([^\s\d])(?=\d)", r"\1 ", t)
-	t = re.sub(r"(\d)(?=[^\s\d])", r"\1 ", t)
-	try:
-		toks = word_tokenize(t)
-	except Exception:
-		toks = t.strip().split()
-
-	# Remove nonword characters and lowercase everything
-	toks = [re.sub(r"[^\w\.\,\-]", "", x.lower()) for x in toks]
-	#return [x for x in toks if x not in stopl]
-	return toks
-
-
-def stem(ts):
-	return [stemmer.stem(x) for x in ts]
 
 
 def shingle(stoks, ttoks, slop=12, lmbda=0.95):
@@ -548,29 +212,29 @@ def main(args):
 	conf.debug = args.debug or args.verbose
 	conf.verbose = args.verbose
 	conf.args = args
-	nf = args.nuggets
-	uf = args.updates
-	mf = args.matches
+	#nf = args.nuggets
+	#uf = args.updates
+	#mf = args.matches
 	sf = args.shingles
 	vf = args.wordvec
-	ef = args.evalfile
+	#ef = args.evalfile
 	wvout = args.wvfile
 	sim_thr = args.sim_thr
 	dset = args.dataset
 	limit = args.limit
 
-	if args.dataset == "auto":
-		if ef is not None:
-			dset = "semeval"
-		else:
-			with open(glob.glob(nf)[0]) as nh:
-				nfhead = nh.readline()
-				if nfhead.startswith("query_id\tnugget_id"):
-					dset = "ts"
-				elif nfhead.startswith("query_id\tvs_id"):
-					dset = "mclick"
-				else:
-					dset = "1click"
+	#if args.dataset == "auto":
+	#	if ef is not None:
+	#		dset = "semeval"
+	#	else:
+	#		with open(glob.glob(nf)[0]) as nh:
+	#			nfhead = nh.readline()
+	#			if nfhead.startswith("query_id\tnugget_id"):
+	#				dset = "ts"
+	#			elif nfhead.startswith("query_id\tvs_id"):
+	#				dset = "mclick"
+	#			else:
+	#				dset = "1click"
 
 	if os.path.exists(wvout) and not args.force:
 		wordvecf = wvout
@@ -612,19 +276,22 @@ def main(args):
 	#	updfn = Updates
 	#	outfn = MCMatchWriter
 
-	if dset == "semeval":
-		data = SemEvalDataset(args.input_data, args.evalfile)
-		#outfn = data.writer
-		if vf is not None:
-			data.vectorize(wordvec)
-	else:
-		printd("Processing Nuggets...")
-		#nuggets = nuggfn(nf, vectorize=vf is not None)
+	data = Dataset.load(args.input_data, dset)
+	if vf is not None:
+		data.vectorize(wordvec)
+	#if dset == "semeval":
+	#	data = SemEvalDataset(args.input_data, args.evalfile)
+	#	#outfn = data.writer
+	#	if vf is not None:
+	#		data.vectorize(wordvec)
+	#else:
+	#	printd("Processing Nuggets...")
+	#	#nuggets = nuggfn(nf, vectorize=vf is not None)
 
-		printd("Processing Updates...")
-		#updates = updfn(uf, vectorize=vf is not None)
-		#data = NuggetDataset(nuggets, updates, mf)
-		data = NuggetDataset(nf, uf, mf, dset=dset, vectorize=vf is not None)
+	#	printd("Processing Updates...")
+	#	#updates = updfn(uf, vectorize=vf is not None)
+	#	#data = NuggetDataset(nuggets, updates, mf)
+	#	data = NuggetDataset(nf, uf, mf, dset=dset, vectorize=vf is not None)
 
 	if vf and wvout is not None and wvout != wordvecf:
 		printd("Rereading word vectors to optimize...")

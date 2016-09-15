@@ -8,6 +8,7 @@ import sys
 import signal
 from scipy.stats import kendalltau
 from matteautils.base import printd
+import matteautils.config as conf
 
 
 def munkres_handler(signum, frame):
@@ -18,6 +19,13 @@ def munkres_handler(signum, frame):
 #a = np.array([[.1]*5,[.2]*5,[.3]*5])
 #b = np.array([[.1]*5,[.2,.2,.2,.2,.3],[0,0,0,0,1]])
 #c = 1 - cdist(a,b,'cosine')
+
+
+def multiCdist(s1, s2, metric):
+	if s1.ndims == 1:
+		return metric(s1["vector"], s2["vector"])
+	else:
+		return sum([metric(x, y) * a for x, y, a in izip(s1["vector"], s2["vector"], conf.alphas)])
 
 
 def getMetric(metric):

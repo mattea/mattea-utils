@@ -1,9 +1,14 @@
-from collections import Counter, defaultdict
+from collections import Counter
 import numpy as np
 import random
 from ..parser import tokenize
 import codecs
 import os
+from itertools import chain
+
+# Data types - Filled in by sub modules
+dtypes = {
+}
 
 
 class Dataset(object):
@@ -17,11 +22,24 @@ class Dataset(object):
 		self.size = 0
 		self.store_data = store_data
 
+	@classmethod
+	def load(cls, path, dtype):
+		if dtype == "auto":
+			for dt, dcls in dtypes.items():
+				if dcls.identify(path):
+					dtype = dt
+					break
+
+		return dtypes[dtype](path)
+
 	def train(self):
 		return self._train
 
 	def test(self):
 		return self._test
+
+	def valid(self):
+		return self._valid
 
 	def __len__(self):
 		return len(self.data)
@@ -151,3 +169,83 @@ class MatchWriter(object):
 																str(match.start), str(match.end),
 																str(match.autop), "%g" % match.score,
 																update["text"], nugget["text"]))
+
+
+class SentencePair(object):
+
+	def __init__(self, s1, s2, sid1=None, sid2=None, pid=None, label=None):
+		self.s1 = {}
+		self.s2 = {}
+		if type(s1) == list:
+			s1toks = s1
+			s1 = " ".join(s1toks)
+		elif type(s1) == dict:
+			self.s1 = s1
+		else:
+			s1toks = tokenize(s1)
+
+		if type(s2) == list:
+			s2toks = s2
+			s2 = " ".join(s2toks)
+		elif type(s2) == dict:
+			self.s2 = s2
+		else:
+			s2toks = tokenize(s2)
+
+		if not self.s1:
+			self.s1 = {"tokens": s1toks, "text": s1}
+			self.s2 = {"tokens": s2toks, "text": s2}
+			if sid1 is None and pid is not None:
+				sid1 = pid + "_1"
+			if sid2 is None and pid is not None:
+				sid2 = pid + "_2"
+		else:
+			sid1 = s1["id"]
+			sid2 = s2["id"]
+			pid = sid1 + "_" + sid2
+			s1toks = s1["tokens"]
+			s2toks = s2["tokens"]
+		self.sid1 = sid1
+		self.sid2 = sid2
+		self.pid = pid
+		self.label = label
+		self.__len = len(s1toks) + len(s2toks)
+
+	def __str__(self):
+		return " ".join(self.s1) + " <s1e> " + " ".join(self.s2)
+
+	def __iter__(self):
+		for word in chain(self.s1["tokens"], self.s2["tokens"]):
+			yield word
+
+	def wv_text(self):
+		for word in chain(self.s1["wv_tokens"], self.s2["wv_tokens"]):
+			yield word
+
+	def wv_sentences(self):
+		return [self.s1["wv_tokens"], self.s2["wv_tokens"]]
+
+	def __getitem__(self, index):
+		s1l = len(self.s1["tokens"])
+		if s1l > index:
+			return self.s1["tokens"][index]
+		else:
+			return self.s2["tokens"][index - s1l]
+
+	def __setitem__(self, index, val):
+		s1l = len(self.s1["tokens"])
+		if s1l > index:
+			self.s1["tokens"][index] = val
+		else:
+			self.s2["tokens"][index - s1l] = val
+
+	def __len__(self):
+		return self.__len
+
+	def normalize(self, matcher, df):
+		self.s1["vector"], self.s1["vector_sum"] = matcher.normalize(self.s1["vector"], df)
+		self.s2["vector"], self.s2["vector_sum"] = matcher.normalize(self.s2["vector"], df)
+
+	def vectorize(self, wordvec):
+		self.s1["vector"], self.s1["wv_tokens"] = wordvec.get_sentvec(self.s1["tokens"])
+		self.s2["vector"], self.s2["wv_tokens"] = wordvec.get_sentvec(self.s2["tokens"])

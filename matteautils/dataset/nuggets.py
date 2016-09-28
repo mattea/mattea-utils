@@ -3,21 +3,33 @@ import glob
 import os
 import codecs
 import re
-from collections import defaultdict, Counter
+import sys
+import traceback
+#import random
+from collections import Counter
+#from itertools import chain
+import nltk
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
-
+from matteautils.randomdict import RandomDict
 from matteautils.base import TSVReader, UnicodeDictReader, printd
 import dataset
 from dataset import Dataset, SentencePair, MatchWriter
+import matteautils.config as conf
 
-stopl = set(stopwords.words('english'))
+try:
+	stopl = set(stopwords.words('english'))
+except LookupError:
+	nltk.download('stopwords')
+	nltk.download('ptb')
+	nltk.download('punkt')
+	stopl = set(stopwords.words('english'))
 stemmer = PorterStemmer()
 
 
 class NuggetDataset(Dataset):
-	def __init__(self, path):
+	def __init__(self, path, neg_samples=5):
 		pfiles = os.listdir(path)
 		printd("Loading dataset")
 		alldata = []
@@ -26,22 +38,26 @@ class NuggetDataset(Dataset):
 				if d not in pfiles:
 					continue
 				dpath = os.path.join(path, d)
-				nset = NuggetSet(dpath)
+				nset = NuggetSet(dpath, neg_samples)
 				alldata.extend([nset.nuggets, nset.updates])
 				setattr(self, d, nset.pairs)
 		else:
-			nset = NuggetSet(path)
+			nset = NuggetSet(path, neg_samples)
 			alldata.extend([nset.nuggets, nset.updates])
 			self.test = nset.pairs
 
 		self.data = Superset(*alldata)
+		self.writer = nset.writer
 
 	@classmethod
 	def identify(cls, path):
 		pfiles = os.listdir(path)
 		if "train" in pfiles:
 			pfiles += os.listdir(os.path.join(path, "train"))
-		return "nuggets.tsv" in pfiles or "gold_iunits.tsv" in pfiles or "0001.matches.txt" in pfiles
+
+		return (("nuggets.tsv" in pfiles) or
+				("gold_iunits.tsv" in pfiles) or
+				("0001.matches.txt" in pfiles))
 
 	def train(self):
 		yield None
@@ -56,11 +72,41 @@ class NuggetDataset(Dataset):
 		#	for update in self.updates:
 		#		yield SentencePair(nugget, update, label=matches.match(nugget, update))
 
+	def maxShortSentence(self):
+		ls = Cycle([0, 0])
+
+		try:
+			for dset in self.data:
+				l = ls.nextitem()
+				for s in dset:
+					cl = len(s["wv_tokens"])
+					if cl > l:
+						l = cl
+				ls.setitem(l)
+		except KeyError, e:
+			printd(e, -1)
+			printd(s, -1)
+			traceback.print_stack()
+			sys.exit(-1)
+		return min(ls)
+
 dataset.dtypes["ts"] = NuggetDataset
 
 
+class Cycle(list):
+	def nextitem(self):
+		try:
+			self._curritem = (self._curritem + 1) % len(self)
+		except AttributeError:
+			self._curritem = 0
+		return self[self._curritem]
+
+	def setitem(self, v):
+		self[self._curritem] = v
+
+
 class NuggetSet(object):
-	def __init__(self, path):
+	def __init__(self, path, neg_samples=None):
 		pfiles = os.listdir(path)
 		if "nuggets.tsv" in pfiles:
 			self.nuggets = Nuggets(os.path.join(path, "nuggets.tsv"))
@@ -78,75 +124,147 @@ class NuggetSet(object):
 			self.matches = Matches(os.path.join(path, "matches.tsv"))
 			self.writer = MCMatchWriter
 
+		self.p = len(self.matches) / (len(self.nuggets) * len(self.updates))
+		if neg_samples is not None:
+			self.neg_samples = neg_samples
+		elif conf.neg_samples:
+			self.neg_samples = conf.neg_samples
+		else:
+			self.neg_samples = 5
+
+	# neg_samples is the number of negative samples to use for each positive
+	# sample (possibly in expectation)
 	def pairs(self):
+		try:
+			return self._pairs
+		except AttributeError:
+			pass
+
+		pairs = []
+		self._pairs = pairs
 		matches = self.matches
-		for nugget in self.nuggets:
-			for update in self.updates:
-				yield SentencePair(nugget, update, label=matches.match(nugget, update))
+		#p = self.p * neg_samples
+		## Method assumes # matches ~ #upd*#nugg
+		#for nugget in self.nuggets:
+		#	for update in self.updates:
+		#		match = matches.match(nugget, update)
+		#		if match:
+		#			yield SentencePair(nugget, update, label=match)
+		#		elif random.random() < p:
+		#			yield SentencePair(nugget, update, label=match)
+
+		# Method assumes # matches << #upd*#nugg
+		nuggets = self.nuggets
+		updates = self.updates
+		neg_samples = self.neg_samples
+		for match in matches:
+			nid = match["nugget_id"]
+			uid = match["update_id"]
+			if (nid not in nuggets) or (uid not in updates):
+				continue
+			pairs.append(SentencePair(nuggets[nid], updates[uid], label=1.0))
+
+			for _ in range(neg_samples):
+				while True:
+					rnid, nugg = nuggets.random_item()
+					ruid, upd = updates.random_item()
+					matchp = matches.match(rnid, ruid)
+					if not matchp:
+						break
+				pairs.append(SentencePair(nugg, upd, label=0.0))
+
+		return pairs
 
 
 class TextFragments(object):
 
 	def __iter__(self):
-		for q in self.data.itervalues():
-			for item in q.itervalues():
-				yield item
+		for item in self.data.itervalues():
+			yield item
+
+	def __getitem__(self, key):
+		return self.data[key]
+
+	def __contains__(self, key):
+		return key in self.data
+
+	def random_item(self):
+		return self.data.random_item()
+
+	def random_key(self):
+		return self.data.random_key()
+
+	def random_value(self):
+		return self.data.random_value()
+
+	def __len__(self):
+		return self.count
 
 	def text(self):
 		res = []
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
-				res.append(rec["tokens"])
+		for rid, rec in self.data.iteritems():
+			res.append(rec["tokens"])
 		return res
 
 	def wv_text(self):
 		#res = []
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
-				#res.append(rec["wv_tokens"])
-				for word in rec["wv_tokens"]:
-					yield word
+		for rid, rec in self.data.iteritems():
+			#res.append(rec["wv_tokens"])
+			for word in rec["wv_tokens"]:
+				yield word
 		#return res
 
 	def wv_sentences(self):
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
+		for rid, rec in self.data.iteritems():
 				yield rec["wv_tokens"]
 
 	def wv_vocab(self):
+		try:
+			return self._wv_vocab
+		except AttributeError:
+			pass
 		res = Counter()
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
+		for rid, rec in self.data.iteritems():
 				res.update(rec["wv_tokens"])
+		self._wv_vocab = res
 		return res
 
 	def normalize(self, matcher, df):
 		printd("Normalizing dset")
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
+		for rid, rec in self.data.iteritems():
 				rec["vector"], rec["vector_sum"] = matcher.normalize(rec["vector"], df)
 
 	def vectorize(self, wordvec):
-		for qid, rs in self.data.iteritems():
-			for rid, rec in rs.iteritems():
+		for rid, rec in self.data.items():
 				rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(rec["tokens"])
+				if len(rec["vector"]) == 0:
+					printd("Empty vector for:", 1)
+					printd(rec, 1)
+					del self.data[rid]
 
 
 class Nuggets(TextFragments):
 
 	def __init__(self, filen, vectorize=False):
-		self.nuggets = defaultdict(dict)
+		self.nuggets = RandomDict()
 		self.vectorizep = vectorize
 		self.read(filen)
 		self.data = self.nuggets
 
 	def read(self, filen):
+		count = 0
 		for rec in self.nuggetReader(filen):
 			toks = tokenize(rec["text"])
-			rec["tokens"] = stem(toks)
+			if len(toks) == 0:
+				continue
+			#rec["tokens"] = stem(toks)
+			rec["tokens"] = toks
 			#if self.vectorizep:
 			#	rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(toks)
-			self.nuggets[rec["query_id"]][rec["id"]] = rec
+			self.nuggets[rec["id"]] = rec
+			count += 1
+
+		self.count = count
 
 	def nuggetReader(self, filen):
 		with open(filen) as nh:
@@ -194,21 +312,27 @@ class MCNuggets(Nuggets):
 class Updates(TextFragments):
 
 	def __init__(self, filen, vectorize=False):
-		self.updates = defaultdict(dict)
+		self.updates = RandomDict()
 		self.vectorizep = vectorize
 		self.read(filen)
 		self.data = self.updates
 
 	def read(self, filen):
+		count = 0
 		for rec in self.updateReader(filen):
 			if rec["duplicate_id"] != "NULL":
 				continue
 			toks = tokenize(rec["text"])
-			rec["tokens"] = stem(toks)
+			if len(toks) == 0:
+				continue
+			#rec["tokens"] = stem(toks)
+			rec["tokens"] = toks
 			#if self.vectorizep:
 			#	rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(toks)
 				#rec["vec_sum"] = np.sum(rec["vector"], axis=0)
-			self.updates[rec["query_id"]][rec["id"]] = rec
+			self.updates[rec["id"]] = rec
+			count += 1
+		self.count = count
 
 	def updateReader(self, filen):
 		with open(filen) as nh:
@@ -242,30 +366,44 @@ class Matches(object):
 		self.matches = matches
 		if filen is None:
 			return
-		for rec in TSVReader(filen):
+
+		count = 0
+		for rec in self.reader(filen):
 			matches[rec["nugget_id"] + rec["update_id"]] = rec
+			count += 1
+
+		self.count = count
+
+	def reader(self, filen):
+		for rec in TSVReader(filen):
+			yield rec
 
 	def __getitem__(self, key):
 		return self.matches[key]
 
+	def __contains__(self, key):
+		return key in self.matches
+
+	def __len__(self):
+		return self.count
+
 	def match(self, nid, uid):
-		if not isinstance(nid, str):
+		if not isinstance(nid, basestring):
 			nid = nid["id"]
-		if not isinstance(uid, str):
+		if not isinstance(uid, basestring):
 			uid = uid["id"]
 		return 1 if nid + uid in self.matches else 0
 
+	def __iter__(self):
+		return iter(self.matches.itervalues())
+
 
 class CLMatches(Matches):
-	def __init__(self, files):
-		matches = dict()
-		self.matches = matches
+	def reader(self, files):
 		mfields = ["update_id", "nugget_id", "start", "end"]
-		if files is None:
-			return
 		for filen in files:
 			for rec in TSVReader(filen, fieldnames=mfields):
-				matches[rec["nugget_id"] + rec["update_id"]] = rec
+				yield rec
 
 
 #class MatchWriter(object):
@@ -299,14 +437,17 @@ class CLMatches(Matches):
 
 
 class Superset(object):
-	def __init__(self, *args):
-		self.items = args
+	def __init__(self, *items):
+		self.items = items
 
 	def __len__(self):
 		return sum([len(x) for x in self.items])
 
 	def __iter__(self):
 		return self.items.__iter__()
+		#for dset in self.items:
+		#	for item in dset:
+		#		yield item
 
 
 class CLMatchWriter(MatchWriter):

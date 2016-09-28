@@ -117,14 +117,15 @@ class WordVec(object):
 	wordvec = []
 
 	def __init__(self, wf=None, sentences=None, wvout=None, size=1000):
+		binary = not wf.endswith(".txt")
 		if sentences and wvout:
 			wv = Word2Vec(size=size, window=5, min_count=1, workers=5)
 			wv.build_vocab(sentences)
-			wv.intersect_word2vec_format(wf or self.wordvecf, binary=True)
+			wv.intersect_word2vec_format(wf or self.wordvecf, binary=binary)
 			wv.save_word2vec_format(wvout, binary=True)
 			self.wordvec = wv
 		else:
-			self.wordvec = Word2Vec.load_word2vec_format(wf or self.wordvecf, binary=True)
+			self.wordvec = Word2Vec.load_word2vec_format(wf or self.wordvecf, binary=binary)
 
 		self.size = self.wordvec.vector_size
 		self.originalsize = self.wordvec.vector_size
@@ -142,7 +143,7 @@ class WordVec(object):
 
 		for t, tc in tf.items():
 			if t in self.wordvec:
-				logdf += self.wordvec[t] * tc
+				logdf += self[t] * tc
 				nterms += 1
 
 		self.__logdf = np.nan_to_num(np.log2(logdf))
@@ -164,6 +165,9 @@ class WordVec(object):
 		self.size *= 2
 		wv.vector_size = self.size
 		printd("Done normalizing: wv is %s:" % (str(wv.syn0.shape)))
+
+	def __getitem__(self, w):
+		return self.wordvec[w]
 
 	def get_sentvec(self, words):
 		sent_vec = []
@@ -205,7 +209,7 @@ class WordVec(object):
 		#	return Word.create(num, self.emptyvec)
 		#word = '/en/' + word
 		try:
-			return Word.create(word, self.wordvec[word])
+			return Word.create(word, self[word])
 		except KeyError:
 			return self.emptyvec
 

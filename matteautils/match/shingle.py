@@ -17,6 +17,7 @@ from matteautils.match.vectorsim import MinDistSim, InfSim, VecSim
 from matteautils.parser import WordVec
 from matteautils.base import printd
 from matteautils.dataset import Dataset
+from . import Match
 import matteautils.config as conf
 
 csv.field_size_limit(sys.maxsize)
@@ -64,14 +65,6 @@ class Timer(object):
 		s = self.s
 		self.s = time.clock()
 		return self.s - s
-
-
-class Match(object):
-	def __init__(self, score=0.0, start=0, end=0, autop=1):
-		self.score = score
-		self.start = start
-		self.end = end
-		self.autop = autop
 
 
 @total_ordering

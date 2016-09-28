@@ -131,8 +131,13 @@ class Dataset(object):
 				yield sent
 
 	def wv_vocab(self):
+		try:
+			return self._wv_vocab
+		except AttributeError:
+			pass
 		res = Counter()
 		res.update(self.wv_text())
+		self._wv_vocab = res
 		return res
 
 	def normalize(self, matcher, df):
@@ -142,6 +147,17 @@ class Dataset(object):
 	def vectorize(self, wordvec):
 		for pair in self.data:
 			pair.vectorize(wordvec)
+
+	def maxShortSentence(self):
+		l = 0
+		for pair in self.data:
+			cl = min(len(pair.s1["wv_tokens"]), len(pair.s2["wv_tokens"]))
+			if cl > l:
+				l = cl
+		return l
+
+	def writer(self, *args, **kwargs):
+		return self._writer(*args, **kwargs)
 
 
 class MatchWriter(object):
@@ -164,7 +180,10 @@ class MatchWriter(object):
 																"End", "AutoP", "Score", "Update_Text",
 																"Nugget_Text"))
 
-	def write(self, qid, nugget, update, match):
+	def write(self, pair, match):
+		qid = pair.s1["query_id"]
+		nugget = pair.s1
+		update = pair.s2
 		print >>self.sh, "\t".join((qid, update["id"], nugget["id"],
 																str(match.start), str(match.end),
 																str(match.autop), "%g" % match.score,
@@ -212,7 +231,7 @@ class SentencePair(object):
 		self.__len = len(s1toks) + len(s2toks)
 
 	def __str__(self):
-		return " ".join(self.s1) + " <s1e> " + " ".join(self.s2)
+		return " ".join(self.s1["tokens"]) + " <s1e> " + " ".join(self.s2["tokens"])
 
 	def __iter__(self):
 		for word in chain(self.s1["tokens"], self.s2["tokens"]):

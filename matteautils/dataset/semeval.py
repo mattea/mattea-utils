@@ -28,14 +28,20 @@ class SemEvalDataset(Dataset):
 		#self.index_data()
 		#self.train = ROListSlice(self.data, 0, ntrain)
 		#self.test = ROListSlice(self.data, ntrain, len(self.data))
+
+		ntrain += nvalid
+
 		self._train = self.data[:ntrain]
 		self.trainlabels = self.labels[:ntrain]
 
-		self._valid = self.data[ntrain:ntrain + nvalid]
-		self.validlabels = self.labels[ntrain:ntrain + nvalid]
+		#self._valid = self.data[ntrain:ntrain + nvalid]
+		#self.validlabels = self.labels[ntrain:ntrain + nvalid]
 
-		self._test = self.data[ntrain + nvalid:]
-		self.testlabels = self.labels[ntrain + nvalid:]
+		#self._test = self.data[ntrain + nvalid:]
+		#self.testlabels = self.labels[ntrain + nvalid:]
+
+		self._test = self.data[ntrain:]
+		self.testlabels = self.labels[ntrain:]
 
 	def readFile(self, filen):
 		nlines = 0

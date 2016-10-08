@@ -227,7 +227,11 @@ class MinDistSim(Matcher):
 					dists[i] = dist[i, j]
 					if j < mstart:
 						mstart = j
-					if j > mend
+					if j > mend:
+						mend = j
+		ldist = tdist
+		tdist = tdist * max(dist.shape) / pow(min(dist.shape), 2)
+		tmaxidf = tmaxidf * max(dist.shape) / pow(min(dist.shape), 2)
 		tsumidf = tsumidf * max(dist.shape) / pow(min(dist.shape), 2)
 		kt, ktp = kendalltau(range(len(matcharr)), matcharr)
 		printd("Score: %0.4f\t%0.4f\t%0.4f\tLabel: %g\n" % (tdist, tmaxidf, tsumidf, pair.label), level=1, sock=sys.stdout)

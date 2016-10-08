@@ -7,7 +7,7 @@ import sys
 import traceback
 #import random
 from collections import Counter
-#from itertools import chain
+from itertools import chain
 import nltk
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
@@ -17,6 +17,7 @@ from matteautils.base import TSVReader, UnicodeDictReader, printd
 import dataset
 from dataset import Dataset, SentencePair, MatchWriter
 import matteautils.config as conf
+import random
 
 try:
 	stopl = set(stopwords.words('english'))
@@ -30,24 +31,32 @@ stemmer = PorterStemmer()
 
 class NuggetDataset(Dataset):
 	def __init__(self, path, neg_samples=5):
+		random.seed(42)
 		pfiles = os.listdir(path)
 		printd("Loading dataset")
 		alldata = []
+		size = 0
 		if "train" in pfiles:
 			for d in ["train", "test", "valid"]:
 				if d not in pfiles:
 					continue
 				dpath = os.path.join(path, d)
 				nset = NuggetSet(dpath, neg_samples)
+				size += nset.size
 				alldata.extend([nset.nuggets, nset.updates])
 				setattr(self, d, nset.pairs)
 		else:
 			nset = NuggetSet(path, neg_samples)
 			alldata.extend([nset.nuggets, nset.updates])
 			self.test = nset.pairs
+			size += nset.size
 
+		self.size = size
 		self.data = Superset(*alldata)
 		self.writer = nset.writer
+		if len(self.valid()) != 0:
+			self._train = SuperList(self.train(), self.valid())
+			self.train = lambda: self._train
 
 	@classmethod
 	def identify(cls, path):
@@ -125,6 +134,8 @@ class NuggetSet(object):
 			self.writer = MCMatchWriter
 
 		self.p = len(self.matches) / (len(self.nuggets) * len(self.updates))
+		self._len = len(self.nuggets) + len(self.updates)
+		self.size = self.nuggets.size + self.updates.size
 		if neg_samples is not None:
 			self.neg_samples = neg_samples
 		elif conf.neg_samples:
@@ -143,35 +154,35 @@ class NuggetSet(object):
 		pairs = []
 		self._pairs = pairs
 		matches = self.matches
-		#p = self.p * neg_samples
-		## Method assumes # matches ~ #upd*#nugg
-		#for nugget in self.nuggets:
-		#	for update in self.updates:
-		#		match = matches.match(nugget, update)
-		#		if match:
-		#			yield SentencePair(nugget, update, label=match)
-		#		elif random.random() < p:
-		#			yield SentencePair(nugget, update, label=match)
-
-		# Method assumes # matches << #upd*#nugg
 		nuggets = self.nuggets
 		updates = self.updates
 		neg_samples = self.neg_samples
-		for match in matches:
-			nid = match["nugget_id"]
-			uid = match["update_id"]
-			if (nid not in nuggets) or (uid not in updates):
-				continue
-			pairs.append(SentencePair(nuggets[nid], updates[uid], label=1.0))
 
-			for _ in range(neg_samples):
-				while True:
-					rnid, nugg = nuggets.random_item()
-					ruid, upd = updates.random_item()
-					matchp = matches.match(rnid, ruid)
-					if not matchp:
-						break
-				pairs.append(SentencePair(nugg, upd, label=0.0))
+		if neg_samples < 0:
+			for nugget in self.nuggets:
+				for update in self.updates:
+					match = matches.match(nugget, update)
+					if match:
+						pairs.append(SentencePair(nugget, update, label=match))
+					else:
+						pairs.append(SentencePair(nugget, update, label=0))
+		else:
+			# Method assumes # matches << #upd*#nugg
+			for match in matches:
+				nid = match["nugget_id"]
+				uid = match["update_id"]
+				if (nid not in nuggets) or (uid not in updates):
+					continue
+				pairs.append(SentencePair(nuggets[nid], updates[uid], label=1.0))
+
+				for _ in range(neg_samples):
+					while True:
+						rnid, nugg = nuggets.random_item()
+						ruid, upd = updates.random_item()
+						matchp = matches.match(rnid, ruid)
+						if not matchp:
+							break
+					pairs.append(SentencePair(nugg, upd, label=0.0))
 
 		return pairs
 
@@ -216,7 +227,11 @@ class TextFragments(object):
 
 	def wv_sentences(self):
 		for rid, rec in self.data.iteritems():
-				yield rec["wv_tokens"]
+			yield rec["wv_tokens"]
+
+	def sentences(self):
+		for rid, rec in self.data.iteritems():
+			yield rec["tokens"]
 
 	def wv_vocab(self):
 		try:
@@ -225,22 +240,18 @@ class TextFragments(object):
 			pass
 		res = Counter()
 		for rid, rec in self.data.iteritems():
-				res.update(rec["wv_tokens"])
+			res.update(rec["wv_tokens"])
 		self._wv_vocab = res
 		return res
 
 	def normalize(self, matcher, df):
 		printd("Normalizing dset")
 		for rid, rec in self.data.iteritems():
-				rec["vector"], rec["vector_sum"] = matcher.normalize(rec["vector"], df)
+			rec["vector"], rec["vector_sum"] = matcher.normalize(rec["vector"], df)
 
 	def vectorize(self, wordvec):
 		for rid, rec in self.data.items():
-				rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(rec["tokens"])
-				if len(rec["vector"]) == 0:
-					printd("Empty vector for:", 1)
-					printd(rec, 1)
-					del self.data[rid]
+			rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(rec["tokens"])
 
 
 class Nuggets(TextFragments):
@@ -253,6 +264,7 @@ class Nuggets(TextFragments):
 
 	def read(self, filen):
 		count = 0
+		wordcount = 0
 		for rec in self.nuggetReader(filen):
 			toks = tokenize(rec["text"])
 			if len(toks) == 0:
@@ -263,8 +275,11 @@ class Nuggets(TextFragments):
 			#	rec["vector"], rec["wv_tokens"] = wordvec.get_sentvec(toks)
 			self.nuggets[rec["id"]] = rec
 			count += 1
+			wordcount += len(toks)
 
 		self.count = count
+		self._len = count
+		self.size = wordcount
 
 	def nuggetReader(self, filen):
 		with open(filen) as nh:
@@ -319,6 +334,7 @@ class Updates(TextFragments):
 
 	def read(self, filen):
 		count = 0
+		wordcount = 0
 		for rec in self.updateReader(filen):
 			if rec["duplicate_id"] != "NULL":
 				continue
@@ -332,7 +348,11 @@ class Updates(TextFragments):
 				#rec["vec_sum"] = np.sum(rec["vector"], axis=0)
 			self.updates[rec["id"]] = rec
 			count += 1
+			wordcount += len(toks)
+
 		self.count = count
+		self._len = count
+		self.size = wordcount
 
 	def updateReader(self, filen):
 		with open(filen) as nh:
@@ -439,15 +459,27 @@ class CLMatches(Matches):
 class Superset(object):
 	def __init__(self, *items):
 		self.items = items
+		self.size = sum([x.size for x in self.items])
 
 	def __len__(self):
 		return sum([len(x) for x in self.items])
 
 	def __iter__(self):
-		return self.items.__iter__()
+		return iter(self.items)
 		#for dset in self.items:
 		#	for item in dset:
 		#		yield item
+
+
+class SuperList(object):
+	def __init__(self, *items):
+		self.items = items
+
+	def __len__(self):
+		return sum([len(x) for x in self.items])
+
+	def __iter__(self):
+		return iter(chain(*self.items))
 
 
 class CLMatchWriter(MatchWriter):

@@ -5,6 +5,7 @@ from ..parser import tokenize
 import codecs
 import os
 from itertools import chain
+from scipy.spatial import distance
 
 # Data types - Filled in by sub modules
 dtypes = {
@@ -23,7 +24,7 @@ class Dataset(object):
 		self.store_data = store_data
 
 	@classmethod
-	def load(cls, path, dtype):
+	def load(cls, path, dtype="auto"):
 		if dtype == "auto":
 			for dt, dcls in dtypes.items():
 				if dcls.identify(path):
@@ -31,6 +32,16 @@ class Dataset(object):
 					break
 
 		return dtypes[dtype](path)
+
+	@classmethod
+	def identify(cls, path, dtype="auto"):
+		if dtype == "auto":
+			for dt, dcls in dtypes.items():
+				if dcls.identify(path):
+					dtype = dt
+					break
+
+		return dtypes[dtype]
 
 	def train(self):
 		return self._train
@@ -44,6 +55,19 @@ class Dataset(object):
 	def __len__(self):
 		return len(self.data)
 
+	def __iter__(self):
+		return iter(chain(*iter(self.data)))
+
+	def weight(self, aggregator=sum, metric='cosine'):
+		distfn = lambda x, y: distance.cdist([x], [y], metric=metric)[0]
+		for s in self:
+			if "weights" in s:
+				return
+			vec = s["vector"]
+			vsum = sum(vec)
+			vlen = len(vec)
+			s["weights"] = [distfn(vsum / vlen, (vsum - v) / (vlen - 1)) for v in vec]
+
 	def add_sentence(self, sid, sent):
 		if type(sent) == list:
 			pos = self.add_tokens(sent)
@@ -56,7 +80,6 @@ class Dataset(object):
 		return self.add_tokens(tokenize(text))
 
 	def add_tokens(self, words):
-		self.counter.update(words)
 		self.size += len(words)
 
 		if self.store_data:
@@ -121,14 +144,30 @@ class Dataset(object):
 	#			yield word
 
 	def wv_text(self):
-		for pair in self.data:
-			for word in pair.wv_text():
+		for itm in self.data:
+			for word in itm.wv_text():
 				yield word
 
 	def wv_sentences(self):
-		for pair in self.data:
-			for sent in pair.wv_sentences():
+		for itm in self.data:
+			for sent in itm.wv_sentences():
 				yield sent
+
+	def sentences(self):
+		for itm in self.data:
+			for sent in itm.sentences():
+				yield sent
+
+	def vocab(self):
+		try:
+			return self._vocab
+		except AttributeError:
+			pass
+		res = Counter()
+		for sent in self.sentences():
+			res.update(sent)
+		self._vocab = res
+		return res
 
 	def wv_vocab(self):
 		try:
@@ -138,15 +177,16 @@ class Dataset(object):
 		res = Counter()
 		res.update(self.wv_text())
 		self._wv_vocab = res
+		res.total = sum(res.values())
 		return res
 
 	def normalize(self, matcher, df):
-		for pair in self.data:
-			pair.normalize(matcher, df)
+		for itm in self.data:
+			itm.normalize(matcher, df)
 
 	def vectorize(self, wordvec):
-		for pair in self.data:
-			pair.vectorize(wordvec)
+		for itm in self.data:
+			itm.vectorize(wordvec)
 
 	def maxShortSentence(self):
 		l = 0
@@ -156,6 +196,7 @@ class Dataset(object):
 				l = cl
 		return l
 
+	@classmethod
 	def writer(self, *args, **kwargs):
 		return self._writer(*args, **kwargs)
 
@@ -164,11 +205,11 @@ class MatchWriter(object):
 
 	def __init__(self, sf):
 		self.sh = codecs.open(sf or os.devnull, 'w', 'utf-8')
+		self.writeheader()
 
 	def __enter__(self):
 		if self.sh:
 			self.sh.__enter__()
-			self.writeheader()
 		return self
 
 	def __exit__(self, ctype, value, traceback):
@@ -177,7 +218,7 @@ class MatchWriter(object):
 
 	def writeheader(self):
 		print >>self.sh, "\t".join(("QueryID", "UpdateID", "NuggetID", "Start",
-																"End", "AutoP", "Score", "Update_Text",
+																"End", "AutoP", "Score", "Label", "Update_Text",
 																"Nugget_Text"))
 
 	def write(self, pair, match):
@@ -187,6 +228,7 @@ class MatchWriter(object):
 		print >>self.sh, "\t".join((qid, update["id"], nugget["id"],
 																str(match.start), str(match.end),
 																str(match.autop), "%g" % match.score,
+																"%g" % pair.label,
 																update["text"], nugget["text"]))
 
 
@@ -234,8 +276,8 @@ class SentencePair(object):
 		return " ".join(self.s1["tokens"]) + " <s1e> " + " ".join(self.s2["tokens"])
 
 	def __iter__(self):
-		for word in chain(self.s1["tokens"], self.s2["tokens"]):
-			yield word
+		for itm in (self.s1, self.s2):
+			yield itm
 
 	def wv_text(self):
 		for word in chain(self.s1["wv_tokens"], self.s2["wv_tokens"]):
@@ -243,6 +285,9 @@ class SentencePair(object):
 
 	def wv_sentences(self):
 		return [self.s1["wv_tokens"], self.s2["wv_tokens"]]
+
+	def sentences(self):
+		return [self.s1["tokens"], self.s2["tokens"]]
 
 	def __getitem__(self, index):
 		s1l = len(self.s1["tokens"])

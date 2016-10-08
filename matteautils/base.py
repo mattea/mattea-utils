@@ -45,9 +45,9 @@ def getfiles(filenames):
 	return filenames
 
 
-def printd(string, level=0):
+def printd(string, level=0, sock=sys.stderr):
 	if level < 0 or (level == 0 and conf.debug) or conf.verbose:
-		print >> sys.stderr, string
+		print >> sock, string
 
 
 def traverse(o, tree_types=(list, tuple)):

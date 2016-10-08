@@ -17,10 +17,13 @@ class SemEvalDataset(Dataset):
 		super(SemEvalDataset, self).__init__(**kwargs)
 
 		train_file = os.path.join(path, "SICK_train.txt")
+		#sts_train_file = os.path.join(path, "STS_train.txt")
 		test_file = os.path.join(path, "SICK_test_annotated.txt")
 		valid_file = os.path.join(path, "SICK_trial.txt")
 
 		ntrain = self.readFile(train_file)
+		#if os.path.exists(sts_train_file):
+		#	ntrain += self.readFile(sts_train_file)
 		nvalid = self.readFile(valid_file)
 		self.readFile(test_file)
 
@@ -43,6 +46,8 @@ class SemEvalDataset(Dataset):
 		self._test = self.data[ntrain:]
 		self.testlabels = self.labels[ntrain:]
 
+	# Do we want to try to grab entailment and learn models for it as a later
+	# feature?
 	def readFile(self, filen):
 		nlines = 0
 		for line in TSVReader(filen):
@@ -59,7 +64,8 @@ class SemEvalDataset(Dataset):
 		pfiles = os.listdir(path)
 		return "SICK_train.txt" in pfiles
 
-	def writer(self, *args, **kwargs):
+	@classmethod
+	def writer(cls, *args, **kwargs):
 		return SemEvalWriter(*args, **kwargs)
 
 dataset.dtypes["semeval"] = SemEvalDataset

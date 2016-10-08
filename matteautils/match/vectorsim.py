@@ -83,12 +83,15 @@ class MinDistSim(Matcher):
 		#s1 = s1["vector"]
 		#s2 = s2["vector"]
 		self.metric = getMetric(metric)
-		self._names = ["MDS_" + x for x in ["tsim", "lsim", "kdist", "kldist", "ldist", "kt", "tmax", "tmin", "tsum", "tstd"]]
+		self._names = ["MDS_" + x for x in ["tsim", "lsim", "kdist", "kldist", "ldist", "kt", "tmax", "tmin", "tsum", "tstd", "tmaxidf", "tsumidf"]]
+		maxsent = maxsent - ngram + 1
 		if dimfeatures:
-			self._names.extend(["MDS_w%03d" % x for x in range(maxsent - ngram + 1)])
+			self._names.extend(["MDS_w%03d" % x for x in range(maxsent)])
 		self.maxsent = maxsent
 		self.ngram = ngram
 		self.recurse = recurse
+		self.vocab = df
+		self.wordcount = df.total
 		self.dimfeatures = dimfeatures
 
 	def match(self, pair):
@@ -115,27 +118,49 @@ class MinDistSim(Matcher):
 			self.s1 = pair.s2
 			self.s2 = pair.s1
 
+		wc = self.wordcount
+		if "wv_idfs" not in self.s1:
+			self.s1["wv_idfs"] = [math.log(wc / self.vocab[x], 2) for x in self.s1["wv_tokens"]]
+		if "wv_idfs" not in self.s2:
+			self.s2["wv_idfs"] = [math.log(wc / self.vocab[x], 2) for x in self.s2["wv_tokens"]]
+
 		if self.ngram > 1:
 			ng = self.ngram
 			v1 = self.s1["vector"]
 			v2 = self.s2["vector"]
 			t1 = self.s1["wv_tokens"]
 			t2 = self.s2["wv_tokens"]
+			#idf1 = self.s1["wv_idfs"]
+			#idf2 = self.s2["wv_idfs"]
+			weights1 = self.s1["weights"]
+			weights2 = self.s2["weights"]
 			nv1 = [sum(v1[i:i + ng]) for i in range(max(1, len(v1) - ng + 1))]
 			nv2 = [sum(v2[i:i + ng]) for i in range(max(1, len(v2) - ng + 1))]
 			nt1 = ["_".join(t1[i:i + ng]) for i in range(max(1, len(t1) - ng + 1))]
 			nt2 = ["_".join(t2[i:i + ng]) for i in range(max(1, len(t2) - ng + 1))]
-			self.s1 = {"vector": nv1, "wv_tokens": nt1}
-			self.s2 = {"vector": nv2, "wv_tokens": nt2}
+			#nidf1 = [max(idf1[i:i + ng]) for i in range(max(1, len(idf1) - ng + 1))]
+			#nidf2 = [max(idf2[i:i + ng]) for i in range(max(1, len(idf2) - ng + 1))]
+			nweights1 = [max(weights1[i:i + ng]) for i in range(max(1, len(weights1) - ng + 1))]
+			nweights2 = [max(weights2[i:i + ng]) for i in range(max(1, len(weights2) - ng + 1))]
+			#self.s1 = {"vector": nv1, "wv_tokens": nt1, "wv_idfs": nidf1}
+			#self.s2 = {"vector": nv2, "wv_tokens": nt2, "wv_idfs": nidf2}
+			self.s1 = {"vector": nv1, "wv_tokens": nt1, "weights": nweights1}
+			self.s2 = {"vector": nv2, "wv_tokens": nt2, "weights": nweights2}
 
 			self.minlen = max(self.minlen - ng + 1, 1)
 			self.maxlen = max(self.maxlen - ng + 1, 1)
+
 		self.dists = [1] * self.minlen
 
 		self.pair = pair
 		#self.dist = pairdist(self.s1["vector"], self.s2["vector"], fn=self.metric)
 		#self.dist = pairdist(self.s1, self.s2, fn=self.metric)
 		dist = self.metric(self.s1, self.s2)
+
+		# scale by max of idf
+		#for i in range(dist.shape[0]):
+		#	for j in range(dist.shape[1]):
+		#		dist[i][j] *= max(self.s1["wv_idfs"][i], self.s2["wv_idfs"][j])
 
 		self.matchv = np.zeros(dist.shape, int)
 		np.fill_diagonal(self.matchv, 1)
@@ -171,6 +196,8 @@ class MinDistSim(Matcher):
 		self.matchv = matches
 
 		tdist = 0
+		tmaxidf = 0
+		tsumidf = 0
 		nmatches = 0
 		mstart = dist.shape[1]
 		mend = 0
@@ -188,17 +215,22 @@ class MinDistSim(Matcher):
 				if matches[i, j]:
 					matchedy[j] = 1
 					tdist += dist[i, j]
-					printd("%s\t%s\t%0.4f" % (s1tok[i], s2tok[j], dist[i, j]), level=1)
+					#tmaxidf += dist[i, j] * max(self.s1["wv_idfs"][i], self.s2["wv_idfs"][j])
+					#tsumidf += dist[i, j] * sum((self.s1["wv_idfs"][i], self.s2["wv_idfs"][j]))
+					wi = self.s1["weights"][i]
+					wj = self.s2["weights"][j]
+					tmaxidf += dist[i, j] * max(wi, wj)
+					tsumidf += dist[i, j] * sum((wi, wj))
+					printd("%s\t%s\t%0.4f\t%0.4f\t%0.4f" % (s1tok[i], s2tok[j], dist[i, j], wi, wj), level=1, sock=sys.stdout)
 					nmatches += 1
 					matcharr[i] = j
 					dists[i] = dist[i, j]
 					if j < mstart:
 						mstart = j
-					if j > mend:
-						mend = j
-		tdist = tdist * max(dist.shape) / pow(min(dist.shape), 2)
+					if j > mend
+		tsumidf = tsumidf * max(dist.shape) / pow(min(dist.shape), 2)
 		kt, ktp = kendalltau(range(len(matcharr)), matcharr)
-		ldist = tdist
+		printd("Score: %0.4f\t%0.4f\t%0.4f\tLabel: %g\n" % (tdist, tmaxidf, tsumidf, pair.label), level=1, sock=sys.stdout)
 		if self.recurse:
 			# Remove matches from dist array, and rerun munkres
 			# Repeat until dist array is empty
@@ -207,6 +239,7 @@ class MinDistSim(Matcher):
 			for i in range(matches.shape[1]):
 				if not matchedy[i]:
 					ldist += min(matches[:, i])
+		ldist /= max(dist.shape)
 		# TODO:
 		# Dist penalty is at most beta
 		# The problem with this is that there may be a better pairing between the two sentences
@@ -221,11 +254,13 @@ class MinDistSim(Matcher):
 		#print "Score: %g" % tsim
 		#print "Label: %g" % self.pair.label
 		self.tsim = 1 - tdist
+		self.tmaxidf = tmaxidf
+		self.tsumidf = tsumidf
 		self.nmatches = nmatches
 		self.start = mstart
 		self.end = mend
 		self.kt = kt
-		self.dists = dists
+		self.dists = sorted(dists, reverse=True)
 		self.lsim = tdist + (max(dists) * (self.maxlen - self.minlen))
 		self.tmax = max(dists)
 		self.tmin = max(dists)
@@ -234,7 +269,7 @@ class MinDistSim(Matcher):
 		return self.tsim
 
 	def features(self):
-		fs = [self.tsim, self.lsim, self.kdist, self.kldist, self.ldist, self.kt, self.tmax, self.tmin, self.tsum, self.tstd]
+		fs = [self.tsim, self.lsim, self.kdist, self.kldist, self.ldist, self.kt, self.tmax, self.tmin, self.tsum, self.tstd, self.tmaxidf, self.tsumidf]
 		if self.dimfeatures:
 			distarr = [0] * self.maxsent
 			dists = self.dists
@@ -489,7 +524,7 @@ def ndist(s1, s2, fn='cosine'):
 class WWSim(Matcher):
 	def __init__(self, wordvec, df=None, metric='cosine', k=10, dimfeatures=True):
 		self.k = 10
-		self._names = ["WWSim"]
+		self._names = ["WWS_base"]
 		if dimfeatures:
 			self._names.extend(["WWS_%03d" % x for x in range(wordvec.size)])
 		self.dimfeatures = dimfeatures

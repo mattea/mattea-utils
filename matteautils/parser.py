@@ -15,6 +15,7 @@ import heapq
 from scipy.spatial.distance import cosine
 import sklearn.preprocessing
 from matteautils.base import printd
+from .match import Matcher
 
 
 class Match(object):
@@ -283,6 +284,18 @@ class Glove(object):
 
 	def __getitem__(self, k):
 		return self.vocab[k]
+
+
+class Shingler(Matcher):
+	def __init__(self, slop=12, lmbda=0.95):
+		self.slop = slop
+		self.lmbda = lmbda
+
+	def match(self, pair):
+		match = shingle(pair.s1["tokens"], pair.s2["tokens"], self.slop, self.lmbda)
+		self.tsim = match.score
+		self.start = match.start
+		self.end = match.end
 
 
 def shingle(stoks, ttoks, slop=12, lmbda=0.95):

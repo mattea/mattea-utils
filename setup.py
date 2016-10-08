@@ -79,7 +79,7 @@ setup(
     # requirements files see:
     # https://packaging.python.org/en/latest/requirements.html
     #install_requires=['peppercorn'],
-    install_requires=['protobuf>=3.0.0b1', 'randomdict', 'nltk'],
+    install_requires=['protobuf>=3.0.0b1', 'randomdict', 'nltk', 'skidmarks'],
 
     # List additional groups of dependencies here (e.g. development
     # dependencies). You can install these using the following syntax,
